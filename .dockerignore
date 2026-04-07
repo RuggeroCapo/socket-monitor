@@ -1,0 +1,10 @@
+.git
+.gitignore
+.vscode
+.kiro
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+node_modules

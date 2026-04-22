@@ -1,9 +1,0 @@
-app = "socket-monitor"
-primary_region = "ams"
-
-[processes]
-  app = "python socket_probe.py"
-
-[[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"

@@ -272,7 +272,7 @@ export async function loadSnapshot(): Promise<SnapshotResponse> {
         FROM vine_item_events
         WHERE event_type = 'item_added'
         ORDER BY event_time DESC
-        LIMIT 24
+        LIMIT 20
         `
       ),
       pool.query<QueueRow>(
@@ -311,6 +311,31 @@ export async function loadSnapshot(): Promise<SnapshotResponse> {
     console.error('loadSnapshot failed', err);
     return emptySnapshot();
   }
+}
+
+export async function loadMoreProducts(
+  offset: number,
+  limit: number
+): Promise<DashboardProduct[]> {
+  const pool = getPool();
+  const result = await pool.query<ProductRow>(
+    `
+    SELECT
+      event_time,
+      asin,
+      queue,
+      title,
+      item_value::text,
+      currency,
+      raw_payload
+    FROM vine_item_events
+    WHERE event_type = 'item_added'
+    ORDER BY event_time DESC
+    LIMIT $1 OFFSET $2
+    `,
+    [limit, offset]
+  );
+  return result.rows.map(mapProduct);
 }
 
 export async function loadHealth(): Promise<HealthResponse> {

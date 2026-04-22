@@ -303,15 +303,14 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
   const [search, setSearch] = useState('');
   const [queueFilter, setQueueFilter] = useState<QueueFilter>('ALL');
   const [sortMode, setSortMode] = useState<SortMode>('newest');
-  const [visibleCount, setVisibleCount] = useState(20);
+  const [extraProducts, setExtraProducts] = useState<DashboardProduct[]>([]);
+  const [nextOffset, setNextOffset] = useState(initialSnapshot.recent_products.length);
+  const [hasMore, setHasMore] = useState(initialSnapshot.recent_products.length === 20);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [isSyncing, setIsSyncing] = useState(false);
   const [chartPoints, setChartPoints] = useState<ChartPoint[]>([]);
   const deferredSearch = useDeferredValue(search.trim().toLowerCase());
-
-  useEffect(() => {
-    setVisibleCount(20);
-  }, [deferredSearch, queueFilter, sortMode]);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -523,9 +522,27 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     };
   }, []);
 
+  const loadMore = async () => {
+    if (isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      const response = await fetch(`/api/products?offset=${nextOffset}&limit=20`, { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = (await response.json()) as { products: DashboardProduct[]; limit: number };
+      setExtraProducts((prev) => [...prev, ...data.products]);
+      setNextOffset((prev) => prev + data.products.length);
+      setHasMore(data.products.length === data.limit);
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
   const tone = dashboardTone(health);
+  const allProducts = [...snapshot.recent_products, ...extraProducts];
   const allFilteredProducts = sortProducts(
-    snapshot.recent_products.filter((product) => {
+    allProducts.filter((product) => {
       const queueMatches = queueFilter === 'ALL' || product.queue === queueFilter;
       if (!queueMatches) return false;
       if (!deferredSearch) return true;
@@ -534,8 +551,6 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     }),
     sortMode
   );
-  const filteredProducts = allFilteredProducts.slice(0, visibleCount);
-  const hasMore = visibleCount < allFilteredProducts.length;
 
   const latestEventTime = snapshot.recent_products[0]?.event_time ?? health.last_event_time;
   const queueCounts = snapshot.recent_products.reduce<Map<QueueCode, number>>((counts, product) => {
@@ -777,7 +792,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
               Nessun prodotto corrisponde ai filtri correnti.
             </div>
           ) : (
-            filteredProducts.map((product) => {
+            allFilteredProducts.map((product) => {
               const isFresh = now - new Date(product.event_time).getTime() < 90_000;
 
               return (
@@ -822,9 +837,10 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
             <button
               type="button"
               className="load-more-btn"
-              onClick={() => setVisibleCount((c) => c + 20)}
+              disabled={isLoadingMore}
+              onClick={() => void loadMore()}
             >
-              Carica altri ({allFilteredProducts.length - visibleCount} rimasti)
+              {isLoadingMore ? 'Caricamento…' : 'Carica altri'}
             </button>
           </div>
         )}

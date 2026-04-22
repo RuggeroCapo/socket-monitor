@@ -1,0 +1,27 @@
+services:
+  mock-socket:
+    build:
+      context: ../mock-socket
+      dockerfile: Dockerfile
+    image: vine-stats-mock-socket:dev
+    environment:
+      MOCK_SOCKET_PORT: 3101
+      MOCK_SOCKET_AUTOPLAY: ${MOCK_SOCKET_AUTOPLAY:-true}
+      MOCK_SOCKET_LOOP: ${MOCK_SOCKET_LOOP:-true}
+      MOCK_SOCKET_SCENARIO_FILE: ${MOCK_SOCKET_SCENARIO_FILE:-/app/scenarios/default.json}
+    ports:
+      - "3101:3101"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3101/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  writer:
+    depends_on:
+      db:
+        condition: service_healthy
+      mock-socket:
+        condition: service_healthy
+    environment:
+      SOCKET_URL: ws://mock-socket:3101/socket.io/?EIO=4&transport=websocket&countryCode=it

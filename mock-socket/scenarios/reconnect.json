@@ -1,0 +1,20 @@
+[
+  {
+    "delayMs": 0,
+    "event": "newItem",
+    "item": {
+      "asin": "MOCK-ASIN-RETRY-001",
+      "queue": "AFA",
+      "title": "Reconnect Test Item",
+      "item_value": 29.9,
+      "currency": "EUR"
+    }
+  },
+  {
+    "delayMs": 2000,
+    "event": "serverDisconnect",
+    "payload": {
+      "reason": "planned e2e disconnect"
+    }
+  }
+]

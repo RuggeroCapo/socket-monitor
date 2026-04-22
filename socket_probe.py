@@ -19,9 +19,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
+
+logging.basicConfig(
+    format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+    level=logging.DEBUG,
+)
+
 from collections import deque
 from dataclasses import dataclass
 from typing import Any

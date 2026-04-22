@@ -1,0 +1,71 @@
+# Coolify deployment stack.
+#
+# This variant is intended for Coolify / Traefik-based deployments and
+# intentionally omits the local `caddy` reverse proxy service.
+#
+# Assign the public domain to the `web` service in Coolify using port `3000`
+# (for example `https://stats.example.com:3000` in the service domain field).
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?}
+      POSTGRES_DB: ${DB_NAME:-vinestats}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-vinestats}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  writer:
+    build:
+      context: ../writer
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${DB_USER:-postgres}:${DB_PASSWORD:?}@db:5432/${DB_NAME:-vinestats}
+      SOCKET_URL: ${SOCKET_URL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      HEALTHCHECK_FILE: /tmp/writer-health.json
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, pathlib, time; data=json.loads(pathlib.Path('/tmp/writer-health.json').read_text()); raise SystemExit(0 if time.time() - float(data['last_heartbeat_at']) < 45 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${DB_USER:-postgres}:${DB_PASSWORD:?}@db:5432/${DB_NAME:-vinestats}
+      NODE_ENV: production
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/ready >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  pgdata:

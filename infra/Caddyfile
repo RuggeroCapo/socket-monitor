@@ -1,0 +1,17 @@
+# Replace `vine-stats.example.it` with the real domain when one is chosen.
+# Caddy will provision a Let's Encrypt cert automatically on first start.
+
+{$WEB_DOMAIN:vine-stats.example.it} {
+	encode zstd gzip
+
+	# SSE: don't buffer, don't compress the live stream
+	@sse path /api/live
+	reverse_proxy @sse web:3000 {
+		flush_interval -1
+		transport http {
+			compression off
+		}
+	}
+
+	reverse_proxy web:3000
+}

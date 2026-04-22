@@ -1,0 +1,44 @@
+[
+  {
+    "delayMs": 0,
+    "event": "newItem",
+    "item": {
+      "asin": "MOCK-ASIN-001",
+      "queue": "AFA",
+      "title": "Mock Espresso Cups",
+      "item_value": 19.99,
+      "currency": "EUR"
+    }
+  },
+  {
+    "delayMs": 1500,
+    "event": "newItem",
+    "item": {
+      "asin": "MOCK-ASIN-002",
+      "queue": "RFY",
+      "title": "Mock Office Lamp",
+      "item_value": 42.5,
+      "currency": "EUR"
+    }
+  },
+  {
+    "delayMs": 1500,
+    "event": "newETV",
+    "item": {
+      "asin": "MOCK-ASIN-001",
+      "etv": 17.49,
+      "currency": "EUR"
+    }
+  },
+  {
+    "delayMs": 1500,
+    "event": "newItem",
+    "item": {
+      "asin": "MOCK-ASIN-003",
+      "queue": "AI",
+      "title": "Mock Travel Bottle",
+      "item_value": 12,
+      "currency": "EUR"
+    }
+  }
+]

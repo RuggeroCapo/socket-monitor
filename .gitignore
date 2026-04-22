@@ -1,6 +1,36 @@
-__pycache__/
-*.pyc
-*.pyo
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Environment files
 .env
-.venv
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+.coverage
+.coverage.*
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.venv/
 venv/
+env/
+
+# Node / Next.js
+node_modules/
+.next/
+*.tsbuildinfo
+web/.Next
+socket_probe.py
+socket-monitor.service

@@ -1,0 +1,29 @@
+# Local development override: build images locally instead of pulling
+# from a registry. Run with:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+
+services:
+  db:
+    ports:
+      - "5432:5432"
+
+  writer:
+    build:
+      context: ../writer
+      dockerfile: Dockerfile
+    image: vine-stats-writer:dev
+
+  notifier:
+    build:
+      context: ../notifier
+      dockerfile: Dockerfile
+    image: vine-stats-notifier:dev
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    image: vine-stats-web:dev
+    ports:
+      - "3000:3000"

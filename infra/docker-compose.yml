@@ -1,0 +1,117 @@
+# Vine Stats IT — single-VM stack.
+#
+# Production deploys should use prebuilt images pulled from a registry,
+# tagged by commit hash. Locally you can run with the dev override:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# (the override file adds `build:` directives to writer and web)
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_DB: ${DB_NAME:-vinestats}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-vinestats}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  writer:
+    image: ${WRITER_IMAGE:-vine-stats-writer:dev}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      SOCKET_URL: ${SOCKET_URL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      HEALTHCHECK_FILE: /tmp/writer-health.json
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, pathlib, time; data=json.loads(pathlib.Path('/tmp/writer-health.json').read_text()); raise SystemExit(0 if time.time() - float(data['last_heartbeat_at']) < 45 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  notifier:
+    image: ${NOTIFIER_IMAGE:-vine-stats-notifier:dev}
+    profiles: ["notifier"]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      TELEGRAM_DISABLE_PREVIEW: ${TELEGRAM_DISABLE_PREVIEW:-true}
+      TELEGRAM_BATCH_SIZE: ${TELEGRAM_BATCH_SIZE:-10}
+      TELEGRAM_IDLE_POLL_SECONDS: ${TELEGRAM_IDLE_POLL_SECONDS:-30}
+      TELEGRAM_LEASE_SECONDS: ${TELEGRAM_LEASE_SECONDS:-120}
+      TELEGRAM_RETRY_BASE_SECONDS: ${TELEGRAM_RETRY_BASE_SECONDS:-15}
+      TELEGRAM_RETRY_MAX_SECONDS: ${TELEGRAM_RETRY_MAX_SECONDS:-900}
+      TELEGRAM_SENT_RETENTION_DAYS: ${TELEGRAM_SENT_RETENTION_DAYS:-14}
+      TELEGRAM_CLEANUP_INTERVAL_HOURS: ${TELEGRAM_CLEANUP_INTERVAL_HOURS:-24}
+      TELEGRAM_VINE_URL_TEMPLATE: ${TELEGRAM_VINE_URL_TEMPLATE:-https://www.amazon.it/dp/{asin}}
+      HEALTHCHECK_FILE: /tmp/notifier-health.json
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, pathlib, time; data=json.loads(pathlib.Path('/tmp/notifier-health.json').read_text()); raise SystemExit(0 if time.time() - float(data['last_heartbeat_at']) < 45 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    image: ${WEB_IMAGE:-vine-stats-web:dev}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      NODE_ENV: production
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/ready >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

@@ -3,6 +3,7 @@ import { Client } from 'pg';
 export type LiveItemEvent = {
   t: 'item_added';
   a: string;   // asin
+  queue?: string | null;
   ts: string;  // ISO timestamp
 };
 

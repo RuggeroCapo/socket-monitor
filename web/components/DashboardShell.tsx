@@ -17,7 +17,11 @@ import type {
   QueueCode,
   SnapshotResponse,
 } from '@/lib/dashboard-types';
-import type { LiveCollectorStatusEvent, LiveItemValueUpdatedEvent } from '@/lib/live-bus';
+import type {
+  LiveCollectorStatusEvent,
+  LiveItemEvent,
+  LiveItemValueUpdatedEvent,
+} from '@/lib/live-bus';
 
 type Props = {
   initialSnapshot: SnapshotResponse;
@@ -28,6 +32,7 @@ type SortMode = 'newest' | 'value_desc' | 'value_asc';
 type QueueFilter = 'ALL' | QueueCode;
 type StatusTone = 'ok' | 'warn' | 'bad';
 type MetricIconKind = 'box' | 'spark' | 'bolt' | 'coin' | 'shield' | 'clock';
+type NotificationTone = 'default' | 'last_chance';
 type AudioContextCtor = typeof AudioContext;
 type WindowWithWebkitAudioContext = Window &
   typeof globalThis & {
@@ -82,6 +87,10 @@ function formatMoney(value: number | null, currency: string | null): string {
 
 function compactNumber(value: number): string {
   return value.toLocaleString('it-IT');
+}
+
+function isLastChanceQueue(queue: string | null | undefined): boolean {
+  return queue?.trim().toLowerCase().replace(/[\s-]+/g, '_') === 'last_chance';
 }
 
 function collectorEventLabel(eventType: string | null | undefined): string {
@@ -241,11 +250,15 @@ function applyItemValueUpdate(
   };
 }
 
-function isItemAddedEvent(payload: unknown): payload is { t: 'item_added'; ts: string } {
+function isItemAddedEvent(payload: unknown): payload is LiveItemEvent {
   return (
     typeof payload === 'object' &&
     payload !== null &&
     (payload as { t?: unknown }).t === 'item_added' &&
+    typeof (payload as { a?: unknown }).a === 'string' &&
+    (typeof (payload as { queue?: unknown }).queue === 'string' ||
+      (payload as { queue?: unknown }).queue === null ||
+      typeof (payload as { queue?: unknown }).queue === 'undefined') &&
     typeof (payload as { ts?: unknown }).ts === 'string'
   );
 }
@@ -335,7 +348,33 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     return context;
   };
 
-  const playNotificationBeep = async () => {
+  const playPulse = (
+    context: AudioContext,
+    startAt: number,
+    frequency: number,
+    duration: number,
+    type: OscillatorType,
+    peakGain: number
+  ) => {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(frequency, startAt);
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(peakGain, startAt + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.onended = () => {
+      oscillator.disconnect();
+      gain.disconnect();
+    };
+    oscillator.start(startAt);
+    oscillator.stop(startAt + duration);
+  };
+
+  const playNotificationBeep = async (tone: NotificationTone = 'default') => {
     const nowMs = Date.now();
     if (nowMs - lastBeepAtRef.current < BEEP_COOLDOWN_MS) return;
 
@@ -344,22 +383,14 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     lastBeepAtRef.current = nowMs;
 
     const startAt = context.currentTime;
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
 
-    oscillator.type = 'triangle';
-    oscillator.frequency.setValueAtTime(880, startAt);
-    gain.gain.setValueAtTime(0.0001, startAt);
-    gain.gain.exponentialRampToValueAtTime(0.028, startAt + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.14);
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.onended = () => {
-      oscillator.disconnect();
-      gain.disconnect();
-    };
-    oscillator.start(startAt);
-    oscillator.stop(startAt + 0.15);
+    if (tone === 'last_chance') {
+      playPulse(context, startAt, 659.25, 0.09, 'sine', 0.05);
+      playPulse(context, startAt + 0.11, 987.77, 0.16, 'sine', 0.065);
+      return;
+    }
+
+    playPulse(context, startAt, 880, 0.15, 'triangle', 0.028);
   };
 
   useEffect(() => {
@@ -454,7 +485,9 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
             startTransition(() => {
               setSnapshot((current) => applyLiveEvent(current, payload.ts));
             });
-            void playNotificationBeep();
+            void playNotificationBeep(
+              isLastChanceQueue(payload.queue) ? 'last_chance' : 'default'
+            );
             scheduleSnapshotRefresh();
             return;
           }

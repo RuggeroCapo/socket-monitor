@@ -105,11 +105,17 @@ def as_utc_isoformat(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
-def build_live_item_event_payload(event_type: str, asin: str, event_time: datetime) -> str:
+def build_live_item_event_payload(
+    event_type: str,
+    asin: str,
+    queue: str | None,
+    event_time: datetime,
+) -> str:
     return json.dumps(
         {
             "t": event_type,
             "a": asin,
+            "queue": queue,
             "ts": as_utc_isoformat(event_time),
         },
         ensure_ascii=False,
@@ -353,7 +359,7 @@ class DBWriter:
             log.warning("Dropping %s for %s: DB unavailable", event_type, asin)
             return False
 
-        live_payload = build_live_item_event_payload(event_type, asin, event_time)
+        live_payload = build_live_item_event_payload(event_type, asin, queue, event_time)
         outbox_payload = (
             build_item_added_outbox_payload(raw_payload, event_time)
             if event_type == "item_added"

@@ -37,6 +37,8 @@ export type SnapshotResponse = {
   hourly_activity_24h: HourlyActivityPoint[];
   recent_products: DashboardProduct[];
   queue_mix_24h: { queue: QueueCode; count: number }[];
+  queue_totals: { queue: QueueCode; count: number }[];
+  total_products: number;
   as_of: string;
 };
 

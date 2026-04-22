@@ -185,6 +185,8 @@ function emptySnapshot(): SnapshotResponse {
     hourly_activity_24h: createEmptyHourlyActivity(),
     recent_products: [],
     queue_mix_24h: createEmptyQueueMix(),
+    queue_totals: createEmptyQueueMix(),
+    total_products: 0,
     as_of: new Date().toISOString(),
   };
 }
@@ -192,7 +194,7 @@ function emptySnapshot(): SnapshotResponse {
 export async function loadSnapshot(): Promise<SnapshotResponse> {
   try {
     const pool = getPool();
-    const [counts, dq, daily, hourly, recent, queues] = await Promise.all([
+    const [counts, dq, daily, hourly, recent, queues, queueTotals] = await Promise.all([
       pool.query<CountRow>(
         `
         SELECT
@@ -284,6 +286,14 @@ export async function loadSnapshot(): Promise<SnapshotResponse> {
         GROUP BY queue
         `
       ),
+      pool.query<QueueRow>(
+        `
+        SELECT queue, count(*)::text AS count
+        FROM vine_item_events
+        WHERE event_type = 'item_added'
+        GROUP BY queue
+        `
+      ),
     ]);
 
     return {
@@ -305,6 +315,8 @@ export async function loadSnapshot(): Promise<SnapshotResponse> {
         : createEmptyHourlyActivity(),
       recent_products: recent.rows.map(mapProduct),
       queue_mix_24h: mapQueueMix(queues.rows),
+      queue_totals: mapQueueMix(queueTotals.rows),
+      total_products: queueTotals.rows.reduce((sum, row) => sum + toNumber(row.count), 0),
       as_of: new Date().toISOString(),
     };
   } catch (err) {

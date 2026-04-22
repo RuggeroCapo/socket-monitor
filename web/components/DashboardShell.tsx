@@ -553,10 +553,9 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
   );
 
   const latestEventTime = snapshot.recent_products[0]?.event_time ?? health.last_event_time;
-  const queueCounts = snapshot.recent_products.reduce<Map<QueueCode, number>>((counts, product) => {
-    counts.set(product.queue, (counts.get(product.queue) ?? 0) + 1);
-    return counts;
-  }, new Map(QUEUE_ORDER.map((queue) => [queue, 0] as const)));
+  const queueCounts = new Map<QueueCode, number>(
+    snapshot.queue_totals.map(({ queue, count }) => [queue, count])
+  );
   const strongestBucket = snapshot.hourly_activity_24h.reduce(
     (best, bucket) => (bucket.added > best.added ? bucket : best),
     snapshot.hourly_activity_24h[0] ?? { bucket: '', label: '—', added: 0 }
@@ -768,7 +767,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
           {QUEUE_FILTERS.map((queue) => {
             const count =
               queue === 'ALL'
-                ? snapshot.recent_products.length
+                ? snapshot.total_products
                 : queueCounts.get(queue) ?? 0;
 
             return (

@@ -9,6 +9,8 @@ export type ChartResponse = {
 
 export type QueueCode = 'AI' | 'AFA' | 'RFY' | 'OTHER';
 
+export type ProductSortMode = 'newest' | 'value_desc' | 'value_asc';
+
 export type HourlyActivityPoint = {
   bucket: string;
   label: string;

@@ -14,6 +14,7 @@ import type {
   ChartResponse,
   DashboardProduct,
   HealthResponse,
+  ProductSortMode,
   QueueCode,
   SnapshotResponse,
 } from '@/lib/dashboard-types';
@@ -28,7 +29,6 @@ type Props = {
   initialHealth: HealthResponse;
 };
 
-type SortMode = 'newest' | 'value_desc' | 'value_asc';
 type QueueFilter = 'ALL' | QueueCode;
 type StatusTone = 'ok' | 'warn' | 'bad';
 type MetricIconKind = 'box' | 'spark' | 'bolt' | 'coin' | 'shield' | 'clock';
@@ -43,6 +43,7 @@ const QUEUE_FILTERS: QueueFilter[] = ['ALL', ...QUEUE_ORDER];
 const MONITORING_TOOLTIP_COPY =
   'Per la natura del monitoraggio alcuni oggetti possono non essere rilevati correttamente dal sistema.';
 const BEEP_COOLDOWN_MS = 250;
+const PAGE_SIZE = 20;
 
 function getAudioContextCtor(): AudioContextCtor | null {
   if (typeof window === 'undefined') return null;
@@ -52,6 +53,33 @@ function getAudioContextCtor(): AudioContextCtor | null {
     (window as WindowWithWebkitAudioContext).webkitAudioContext ??
     null
   );
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function buildProductsSearchParams({
+  offset,
+  limit,
+  queueFilter,
+  search,
+  sortMode,
+}: {
+  offset: number;
+  limit: number;
+  queueFilter: QueueFilter;
+  search: string;
+  sortMode: ProductSortMode;
+}): string {
+  const params = new URLSearchParams({
+    offset: String(offset),
+    limit: String(limit),
+    sort: sortMode,
+  });
+  if (search) params.set('search', search);
+  if (queueFilter !== 'ALL') params.set('queue', queueFilter);
+  return params.toString();
 }
 
 function relTime(iso: string | null, now: number): string {
@@ -231,6 +259,22 @@ function applyCollectorStatus(
   };
 }
 
+function applyCollectorActivity(prev: HealthResponse): HealthResponse {
+  if (prev.collector_status === 'online' && !prev.gap_open) {
+    return {
+      ...prev,
+      as_of: new Date().toISOString(),
+    };
+  }
+
+  return {
+    ...prev,
+    collector_status: 'online',
+    gap_open: false,
+    as_of: new Date().toISOString(),
+  };
+}
+
 function applyItemValueUpdate(
   prev: SnapshotResponse,
   event: LiveItemValueUpdatedEvent
@@ -290,45 +334,39 @@ function isCollectorStatusEvent(payload: unknown): payload is LiveCollectorStatu
   );
 }
 
-function sortProducts(products: DashboardProduct[], mode: SortMode): DashboardProduct[] {
-  const sorted = [...products];
-  if (mode === 'value_desc') {
-    sorted.sort((left, right) => (right.item_value ?? -1) - (left.item_value ?? -1));
-    return sorted;
-  }
-  if (mode === 'value_asc') {
-    sorted.sort((left, right) => {
-      const leftValue = left.item_value ?? Number.MAX_SAFE_INTEGER;
-      const rightValue = right.item_value ?? Number.MAX_SAFE_INTEGER;
-      return leftValue - rightValue;
-    });
-    return sorted;
-  }
-  sorted.sort(
-    (left, right) => new Date(right.event_time).getTime() - new Date(left.event_time).getTime()
-  );
-  return sorted;
-}
-
 export default function DashboardShell({ initialSnapshot, initialHealth }: Props) {
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [health, setHealth] = useState(initialHealth);
   const [search, setSearch] = useState('');
   const [queueFilter, setQueueFilter] = useState<QueueFilter>('ALL');
-  const [sortMode, setSortMode] = useState<SortMode>('newest');
-  const [extraProducts, setExtraProducts] = useState<DashboardProduct[]>([]);
-  const [nextOffset, setNextOffset] = useState(initialSnapshot.recent_products.length);
-  const [hasMore, setHasMore] = useState(initialSnapshot.recent_products.length === 20);
+  const [sortMode, setSortMode] = useState<ProductSortMode>('newest');
+  const [products, setProducts] = useState<DashboardProduct[]>(initialSnapshot.recent_products);
+  const [hasMore, setHasMore] = useState(initialSnapshot.recent_products.length === PAGE_SIZE);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isRefreshingProducts, setIsRefreshingProducts] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [isSyncing, setIsSyncing] = useState(false);
   const [chartPoints, setChartPoints] = useState<ChartPoint[]>([]);
-  const deferredSearch = useDeferredValue(search.trim().toLowerCase());
+  const deferredSearch = useDeferredValue(search.trim());
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const productsRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const lastBeepAtRef = useRef(0);
+  const productsAbortRef = useRef<AbortController | null>(null);
+  const productsRequestIdRef = useRef(0);
+  const hasInitializedProductsRef = useRef(false);
+  const productsLengthRef = useRef(initialSnapshot.recent_products.length);
+  const productsQueryRef = useRef<{
+    queueFilter: QueueFilter;
+    search: string;
+    sortMode: ProductSortMode;
+  }>({
+    queueFilter: 'ALL',
+    search: '',
+    sortMode: 'newest',
+  });
 
   const primeAudioContext = async (): Promise<AudioContext | null> => {
     const AudioContextCtor = getAudioContextCtor();
@@ -393,6 +431,76 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     playPulse(context, startAt, 880, 0.15, 'triangle', 0.028);
   };
 
+  const fetchProducts = async ({
+    offset,
+    limit,
+    replace,
+  }: {
+    offset: number;
+    limit: number;
+    replace: boolean;
+  }) => {
+    if (!replace && isLoadingMore) return;
+
+    const requestId = productsRequestIdRef.current + 1;
+    productsRequestIdRef.current = requestId;
+    setIsLoadingMore(false);
+    setIsRefreshingProducts(false);
+    productsAbortRef.current?.abort();
+    const controller = new AbortController();
+    productsAbortRef.current = controller;
+    const query = productsQueryRef.current;
+
+    if (replace) {
+      setIsRefreshingProducts(true);
+    } else {
+      setIsLoadingMore(true);
+    }
+
+    try {
+      const response = await fetch(
+        `/api/products?${buildProductsSearchParams({
+          offset,
+          limit,
+          queueFilter: query.queueFilter,
+          search: query.search,
+          sortMode: query.sortMode,
+        })}`,
+        {
+          cache: 'no-store',
+          signal: controller.signal,
+        }
+      );
+      if (!response.ok) return;
+      const data = (await response.json()) as { products: DashboardProduct[]; limit: number };
+      if (productsRequestIdRef.current !== requestId) return;
+      startTransition(() => {
+        setProducts((current) => {
+          const next = replace ? data.products : [...current, ...data.products];
+          productsLengthRef.current = next.length;
+          return next;
+        });
+        setHasMore(data.products.length === data.limit);
+      });
+    } catch (error) {
+      if (!isAbortError(error)) {
+        // ignore network failures
+      }
+    } finally {
+      if (productsRequestIdRef.current === requestId) {
+        if (replace) {
+          setIsRefreshingProducts(false);
+        } else {
+          setIsLoadingMore(false);
+        }
+      }
+    }
+  };
+
+  const refreshProducts = async (limit = PAGE_SIZE) => {
+    await fetchProducts({ offset: 0, limit, replace: true });
+  };
+
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
@@ -400,6 +508,9 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
 
   useEffect(() => {
     return () => {
+      productsAbortRef.current?.abort();
+      if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
+      if (productsRefreshTimeoutRef.current) clearTimeout(productsRefreshTimeoutRef.current);
       const context = audioContextRef.current;
       audioContextRef.current = null;
       if (!context) return;
@@ -443,6 +554,19 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
   }, []);
 
   useEffect(() => {
+    productsQueryRef.current = {
+      queueFilter,
+      search: deferredSearch,
+      sortMode,
+    };
+    if (!hasInitializedProductsRef.current) {
+      hasInitializedProductsRef.current = true;
+      return;
+    }
+    void refreshProducts(PAGE_SIZE);
+  }, [deferredSearch, queueFilter, sortMode]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const refreshSnapshot = async () => {
@@ -469,6 +593,13 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
       }, delay);
     };
 
+    const scheduleProductsRefresh = (delay = 700) => {
+      if (productsRefreshTimeoutRef.current) clearTimeout(productsRefreshTimeoutRef.current);
+      productsRefreshTimeoutRef.current = setTimeout(() => {
+        void refreshProducts(Math.max(productsLengthRef.current, PAGE_SIZE));
+      }, delay);
+    };
+
     let retryDelay = 1000;
     const open = () => {
       if (cancelled) return;
@@ -484,18 +615,22 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
           if (isItemAddedEvent(payload)) {
             startTransition(() => {
               setSnapshot((current) => applyLiveEvent(current, payload.ts));
+              setHealth((current) => applyCollectorActivity(current));
             });
             void playNotificationBeep(
               isLastChanceQueue(payload.queue) ? 'last_chance' : 'default'
             );
             scheduleSnapshotRefresh();
+            scheduleProductsRefresh();
             return;
           }
           if (isItemValueUpdatedEvent(payload)) {
             startTransition(() => {
               setSnapshot((current) => applyItemValueUpdate(current, payload));
+              setHealth((current) => applyCollectorActivity(current));
             });
             scheduleSnapshotRefresh();
+            scheduleProductsRefresh();
             return;
           }
           if (isCollectorStatusEvent(payload)) {
@@ -522,6 +657,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     return () => {
       cancelled = true;
       if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
+      if (productsRefreshTimeoutRef.current) clearTimeout(productsRefreshTimeoutRef.current);
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
     };
@@ -556,35 +692,11 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
   }, []);
 
   const loadMore = async () => {
-    if (isLoadingMore) return;
-    setIsLoadingMore(true);
-    try {
-      const response = await fetch(`/api/products?offset=${nextOffset}&limit=20`, { cache: 'no-store' });
-      if (!response.ok) return;
-      const data = (await response.json()) as { products: DashboardProduct[]; limit: number };
-      setExtraProducts((prev) => [...prev, ...data.products]);
-      setNextOffset((prev) => prev + data.products.length);
-      setHasMore(data.products.length === data.limit);
-    } catch {
-      // ignore
-    } finally {
-      setIsLoadingMore(false);
-    }
+    if (isRefreshingProducts) return;
+    await fetchProducts({ offset: products.length, limit: PAGE_SIZE, replace: false });
   };
 
   const tone = dashboardTone(health);
-  const allProducts = [...snapshot.recent_products, ...extraProducts];
-  const allFilteredProducts = sortProducts(
-    allProducts.filter((product) => {
-      const queueMatches = queueFilter === 'ALL' || product.queue === queueFilter;
-      if (!queueMatches) return false;
-      if (!deferredSearch) return true;
-      const haystack = `${product.asin} ${product.title || ''}`.toLowerCase();
-      return haystack.includes(deferredSearch);
-    }),
-    sortMode
-  );
-
   const latestEventTime = snapshot.recent_products[0]?.event_time ?? health.last_event_time;
   const queueCounts = new Map<QueueCode, number>(
     snapshot.queue_totals.map(({ queue, count }) => [queue, count])
@@ -787,7 +899,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
             <select
               className="sort-select"
               value={sortMode}
-              onChange={(event) => setSortMode(event.target.value as SortMode)}
+              onChange={(event) => setSortMode(event.target.value as ProductSortMode)}
             >
               <option value="newest">Più recenti</option>
               <option value="value_desc">Valore alto</option>
@@ -819,12 +931,12 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
         </div>
 
         <div className="products-grid">
-          {allFilteredProducts.length === 0 ? (
+          {products.length === 0 ? (
             <div className="empty-state">
               Nessun prodotto corrisponde ai filtri correnti.
             </div>
           ) : (
-            allFilteredProducts.map((product) => {
+            products.map((product) => {
               const isFresh = now - new Date(product.event_time).getTime() < 90_000;
 
               return (
@@ -869,7 +981,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
             <button
               type="button"
               className="load-more-btn"
-              disabled={isLoadingMore}
+              disabled={isLoadingMore || isRefreshingProducts}
               onClick={() => void loadMore()}
             >
               {isLoadingMore ? 'Caricamento…' : 'Carica altri'}

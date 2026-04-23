@@ -4,6 +4,8 @@ import type {
   DashboardProduct,
   HealthResponse,
   HourlyActivityPoint,
+  ProductSortMode,
+  QueueCode,
   SnapshotResponse,
 } from '@/lib/dashboard-types';
 
@@ -51,6 +53,27 @@ const HOUR_FORMATTER = new Intl.DateTimeFormat('it-IT', {
   minute: '2-digit',
   timeZone: 'Europe/Rome',
 });
+
+const COLLECTOR_ACTIVITY_FALLBACK_WINDOW_MS = 2 * 60 * 1000;
+const NORMALIZED_QUEUE_SQL = `
+  CASE
+    WHEN regexp_replace(lower(trim(coalesce(queue, ''))), '[[:space:]-]+', '_', 'g')
+      IN ('ai', 'encore') THEN 'AI'
+    WHEN regexp_replace(lower(trim(coalesce(queue, ''))), '[[:space:]-]+', '_', 'g')
+      IN ('afa', 'last_chance') THEN 'AFA'
+    WHEN regexp_replace(lower(trim(coalesce(queue, ''))), '[[:space:]-]+', '_', 'g')
+      IN ('rfy', 'potluck') THEN 'RFY'
+    ELSE 'OTHER'
+  END
+`;
+
+type ProductQuery = {
+  offset: number;
+  limit: number;
+  search?: string;
+  sort?: ProductSortMode;
+  queue?: QueueCode;
+};
 
 function createEmptyDailyCounts(): SnapshotResponse['daily_counts'] {
   const start = new Date();
@@ -102,6 +125,22 @@ function toNullableNumber(value: string | null | undefined): number | null {
 
 function buildDetailUrl(asin: string): string {
   return `https://www.amazon.it/dp/${encodeURIComponent(asin)}`;
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
+}
+
+function productOrderClause(sort: ProductSortMode): string {
+  switch (sort) {
+    case 'value_desc':
+      return 'ORDER BY item_value DESC NULLS LAST, event_time DESC, id DESC';
+    case 'value_asc':
+      return 'ORDER BY item_value ASC NULLS LAST, event_time DESC, id DESC';
+    case 'newest':
+    default:
+      return 'ORDER BY event_time DESC, id DESC';
+  }
 }
 
 function isLikelyImageUrl(value: string): boolean {
@@ -326,10 +365,30 @@ export async function loadSnapshot(): Promise<SnapshotResponse> {
 }
 
 export async function loadMoreProducts(
-  offset: number,
-  limit: number
+  query: ProductQuery
 ): Promise<DashboardProduct[]> {
   const pool = getPool();
+  const params: Array<number | string> = [];
+  const conditions = [`event_type = 'item_added'`];
+  const search = query.search?.trim();
+  const sort = query.sort ?? 'newest';
+
+  if (search) {
+    params.push(`%${escapeLikePattern(search)}%`);
+    const searchParam = `$${params.length}`;
+    conditions.push(
+      `(asin ILIKE ${searchParam} ESCAPE '\\' OR coalesce(title, '') ILIKE ${searchParam} ESCAPE '\\')`
+    );
+  }
+
+  if (query.queue) {
+    params.push(query.queue);
+    conditions.push(`${NORMALIZED_QUEUE_SQL} = $${params.length}`);
+  }
+
+  params.push(query.limit, query.offset);
+  const limitParam = `$${params.length - 1}`;
+  const offsetParam = `$${params.length}`;
   const result = await pool.query<ProductRow>(
     `
     SELECT
@@ -341,11 +400,11 @@ export async function loadMoreProducts(
       currency,
       raw_payload
     FROM vine_item_events
-    WHERE event_type = 'item_added'
-    ORDER BY event_time DESC
-    LIMIT $1 OFFSET $2
+    WHERE ${conditions.join('\n      AND ')}
+    ${productOrderClause(sort)}
+    LIMIT ${limitParam} OFFSET ${offsetParam}
     `,
-    [limit, offset]
+    params
   );
   return result.rows.map(mapProduct);
 }
@@ -354,8 +413,13 @@ export async function loadHealth(): Promise<HealthResponse> {
   try {
     const pool = getPool();
     const [lastItem, lastCollector, dq] = await Promise.all([
-      pool.query<{ event_time: Date | null }>(
-        `SELECT max(event_time) AS event_time FROM vine_item_events`
+      pool.query<{ event_time: Date | null; ingest_time: Date | null }>(
+        `
+        SELECT
+          max(event_time) AS event_time,
+          max(ingest_time) AS ingest_time
+        FROM vine_item_events
+        `
       ),
       pool.query<{ event_type: string; time: Date }>(
         `
@@ -374,19 +438,32 @@ export async function loadHealth(): Promise<HealthResponse> {
       ),
     ]);
 
-    const lastType = lastCollector.rows[0]?.event_type ?? null;
+    const now = Date.now();
+    const lastItemEventTime = lastItem.rows[0]?.event_time ?? null;
+    const lastItemIngestTime = lastItem.rows[0]?.ingest_time ?? null;
+    const lastCollectorEvent = lastCollector.rows[0] ?? null;
+    const lastType = lastCollectorEvent?.event_type ?? null;
+    const lastItemIngestMs = lastItemIngestTime?.getTime() ?? null;
+    const hasRecentItemIngest =
+      lastItemIngestMs !== null &&
+      now - lastItemIngestMs <= COLLECTOR_ACTIVITY_FALLBACK_WINDOW_MS;
+    const itemIngestIsNewerThanStatus =
+      hasRecentItemIngest &&
+      (lastCollectorEvent === null || lastItemIngestMs > lastCollectorEvent.time.getTime());
     const collectorStatus =
-      lastType === 'connected' || lastType === 'gap_closed' ? 'online' : 'offline';
+      itemIngestIsNewerThanStatus || lastType === 'connected' || lastType === 'gap_closed'
+        ? 'online'
+        : 'offline';
     const gapOpen =
       collectorStatus === 'offline';
 
     return {
       collector_status: collectorStatus,
-      last_event_time: lastItem.rows[0]?.event_time?.toISOString() ?? null,
-      last_collector_event: lastCollector.rows[0]
+      last_event_time: lastItemEventTime?.toISOString() ?? null,
+      last_collector_event: lastCollectorEvent
         ? {
-            event_type: lastCollector.rows[0].event_type,
-            time: lastCollector.rows[0].time.toISOString(),
+            event_type: lastCollectorEvent.event_type,
+            time: lastCollectorEvent.time.toISOString(),
           }
         : null,
       gap_open: gapOpen,

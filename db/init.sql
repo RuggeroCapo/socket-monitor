@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS vine_item_events (
   asin                TEXT NOT NULL,
   queue               TEXT,
   title               TEXT,
+  source_added_at     TIMESTAMPTZ,
   item_value          NUMERIC(10,2),
   currency            TEXT,
   source_event_key    TEXT NOT NULL,

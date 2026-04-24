@@ -347,6 +347,7 @@ class DBWriter:
         currency: str | None,
         source_event_key: str,
         event_time: datetime,
+        source_added_at: datetime | None,
         raw_payload: dict[str, Any],
     ) -> bool:
         """Dedupe + insert + NOTIFY in one transaction.
@@ -379,9 +380,10 @@ class DBWriter:
                         )
                         INSERT INTO vine_item_events(
                             event_time, event_type, asin, queue, title,
-                            item_value, currency, source_event_key, raw_payload
+                            source_added_at, item_value, currency,
+                            source_event_key, raw_payload
                         )
-                        SELECT $2, $3, $4, $5, $6, $7, $8, $1, $9::jsonb
+                        SELECT $2, $3, $4, $5, $6, $7, $8, $9, $1, $10::jsonb
                         WHERE EXISTS (SELECT 1 FROM dedupe)
                         RETURNING id
                         """,
@@ -391,6 +393,7 @@ class DBWriter:
                         asin,
                         queue,
                         title,
+                        source_added_at,
                         item_value,
                         currency,
                         json.dumps(raw_payload, ensure_ascii=False),
@@ -648,8 +651,8 @@ def compute_source_event_key(
     return f"{event_type}:{asin}:{digest}"
 
 
-def parse_event_time(item: dict[str, Any]) -> datetime:
-    """Parse a source-side timestamp into a tz-aware datetime, fall back to now()."""
+def parse_source_added_at(item: dict[str, Any]) -> datetime | None:
+    """Parse the Vine Helper "Added" timestamp, if present."""
     raw = item.get("date_added") or item.get("date") or item.get("created_at")
     if isinstance(raw, str) and raw:
         for parser in (datetime.fromisoformat,):
@@ -669,7 +672,7 @@ def parse_event_time(item: dict[str, Any]) -> datetime:
             return datetime.fromtimestamp(ts, tz=timezone.utc)
         except (OverflowError, ValueError):
             pass
-    return datetime.now(timezone.utc)
+    return None
 
 
 def coerce_float(value: Any) -> float | None:
@@ -857,7 +860,7 @@ class Collector:
                 return False
 
             currency = (str(item.get("currency") or "").strip() or "EUR")
-            event_time = parse_event_time(item)
+            event_time = datetime.now(timezone.utc)
             source_event_key = compute_source_event_key("item_value_updated", asin, item)
 
             updated = await self.writer.update_item_value(
@@ -894,7 +897,8 @@ class Collector:
         title = (str(item.get("title") or "").strip() or None)
         currency = (str(item.get("currency") or "").strip() or None)
         item_value = coerce_float(item.get("item_value") or item.get("value"))
-        event_time = parse_event_time(item)
+        event_time = datetime.now(timezone.utc)
+        source_added_at = parse_source_added_at(item)
         source_event_key = compute_source_event_key(mapped, asin, item)
 
         inserted = await self.writer.write_item_event(
@@ -906,6 +910,7 @@ class Collector:
             currency=currency,
             source_event_key=source_event_key,
             event_time=event_time,
+            source_added_at=source_added_at,
             raw_payload=item,
         )
 

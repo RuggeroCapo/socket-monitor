@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { loadMoreProducts } from '@/lib/dashboard-data';
+import { loadProductsForApp } from '@/lib/dashboard-source';
 import type { ProductSortMode, QueueCode } from '@/lib/dashboard-types';
 
 export const runtime = 'nodejs';
@@ -27,7 +27,7 @@ export async function GET(request: Request): Promise<Response> {
     : undefined;
 
   try {
-    const products = await loadMoreProducts({
+    const body = await loadProductsForApp({
       offset,
       limit,
       search,
@@ -35,7 +35,7 @@ export async function GET(request: Request): Promise<Response> {
       queue,
     });
     return NextResponse.json(
-      { products, offset, limit },
+      body,
       { headers: { 'Cache-Control': 'no-store' } }
     );
   } catch (err) {

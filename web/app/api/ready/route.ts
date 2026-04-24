@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { pingDatabase } from '@/lib/db';
+import { pingDashboardSource } from '@/lib/dashboard-source';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(): Promise<Response> {
   try {
-    await pingDatabase();
+    await pingDashboardSource();
     return NextResponse.json(
       { status: 'ok' },
       { headers: { 'Cache-Control': 'no-store' } }

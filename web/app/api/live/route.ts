@@ -1,9 +1,15 @@
 import { liveBus, type LiveEvent } from '@/lib/live-bus';
+import { proxyLiveStreamForApp } from '@/lib/dashboard-source';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request): Promise<Response> {
+  const proxiedResponse = await proxyLiveStreamForApp(request);
+  if (proxiedResponse) {
+    return proxiedResponse;
+  }
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({

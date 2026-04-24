@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { loadSnapshot } from '@/lib/dashboard-data';
+import { loadSnapshotForApp } from '@/lib/dashboard-source';
 import type { SnapshotResponse } from '@/lib/dashboard-types';
 
 export const runtime = 'nodejs';
@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(): Promise<Response> {
   try {
-    const body: SnapshotResponse = await loadSnapshot();
+    const body: SnapshotResponse = await loadSnapshotForApp();
 
     return NextResponse.json(body, {
       headers: { 'Cache-Control': 'no-store' },

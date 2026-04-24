@@ -37,6 +37,31 @@ docker compose \
   up --build
 ```
 
+## Frontend locale con dati del deploy online
+
+Se vuoi lanciare solo il frontend Next in locale ma leggere i dati dal deploy pubblico, non serve esporre il Postgres remoto. Il deploy su `https://ita-vine-stats.duckdns.org` espone gia' le API necessarie (`/api/health`, `/api/live/snapshot`, `/api/chart`, `/api/live`), quindi il frontend locale puo' usarle come upstream.
+
+```bash
+cd web
+cp .env.local.example .env.local
+npm install
+npm run dev
+```
+
+In `web/.env.local` lascia:
+
+```env
+REMOTE_DASHBOARD_URL=https://ita-vine-stats.duckdns.org
+```
+
+Con questo env:
+
+- la pagina iniziale server-side usa i dati del deploy remoto
+- le route locali `/api/*` fanno da proxy verso il deploy remoto
+- lo stream live `/api/live` continua a funzionare in locale senza accesso diretto al DB
+
+Se invece vuoi davvero collegarti al Postgres remoto dal tuo Next locale, l'URL HTTPS del sito non basta: serve un `DATABASE_URL=postgres://...` raggiungibile dalla tua macchina, ad esempio via porta pubblica o tunnel SSH.
+
 ## Mock socket for e2e
 
 When the real upstream Socket.IO feed is unavailable, you can run the stack against a local Node.js mock socket instead:

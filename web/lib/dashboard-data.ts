@@ -134,9 +134,9 @@ function escapeLikePattern(value: string): string {
 function productOrderClause(sort: ProductSortMode): string {
   switch (sort) {
     case 'value_desc':
-      return 'ORDER BY item_value DESC NULLS LAST, event_time DESC, id DESC';
+      return 'ORDER BY vine_item_events.item_value DESC NULLS LAST, event_time DESC, id DESC';
     case 'value_asc':
-      return 'ORDER BY item_value ASC NULLS LAST, event_time DESC, id DESC';
+      return 'ORDER BY vine_item_events.item_value ASC NULLS LAST, event_time DESC, id DESC';
     case 'newest':
     default:
       return 'ORDER BY event_time DESC, id DESC';

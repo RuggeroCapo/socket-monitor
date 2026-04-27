@@ -1,13 +1,13 @@
 export default function Nav() {
   return (
-    <nav className="topbar">
+    <nav className="topbar" aria-label="Navigazione principale">
       <div className="topbar-brand">
-        <span className="brand-mark" />
+        <span className="brand-mark">VS</span>
         <div>
           <div className="brand-name">
-            Vine Pulse <span>IT</span>
+            Vine Stats <span>IT</span>
           </div>
-          <div className="brand-subtitle">Live Tracker</div>
+          <div className="brand-subtitle">Monitoraggio Amazon Vine</div>
         </div>
       </div>
 

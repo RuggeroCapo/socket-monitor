@@ -22,9 +22,16 @@ import type { ChartPoint } from '@/lib/dashboard-types';
 
 type Props = {
   points: ChartPoint[];
+  onRangeChange?: (selection: ChartRangeSelection) => void;
 };
 
 type PresetKey = '15m' | '30m' | '1h' | '6h' | '24h' | '7d';
+type ChartRangeSelection = {
+  since: string;
+  until: string;
+  rangeLabel: string;
+  widthLabel: string;
+};
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -91,7 +98,7 @@ function presetKeyForWidth(widthMs: number): PresetKey | null {
   return hit ? hit.key : null;
 }
 
-export default function SevenDayChart({ points }: Props) {
+export default function SevenDayChart({ points, onRangeChange }: Props) {
   const hasData = points.length > 1;
   const dataFromMs = hasData ? new Date(points[0].bucket).getTime() : 0;
   const dataToMs   = hasData ? new Date(points[points.length - 1].bucket).getTime() : 0;
@@ -99,6 +106,9 @@ export default function SevenDayChart({ points }: Props) {
   const [windowMs, setWindowMs] = useState<number>(DEFAULT_PRESET.ms);
   // anchorMs = null → live mode (right edge locked to newest datapoint).
   const [anchorMs, setAnchorMs] = useState<number | null>(null);
+  const rangeIntentRef = useRef(false);
+  const rangeNotifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastEmittedRangeRef = useRef<string | null>(null);
 
   // Restore last preset from session storage after mount (avoid SSR mismatch).
   useEffect(() => {
@@ -115,6 +125,8 @@ export default function SevenDayChart({ points }: Props) {
   const fromMs = Math.max(dataFromMs, toMs - windowMs);
   const effectiveWidthMs = Math.max(1, toMs - fromMs);
   const isLive = anchorMs === null;
+  const rangeLabel = hasData ? formatRange(fromMs, toMs) : '—';
+  const widthLabel = formatWidth(effectiveWidthMs);
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
   // Keep the latest range in a ref so native listeners don't need to re-attach on every state change.
@@ -134,6 +146,45 @@ export default function SevenDayChart({ points }: Props) {
     setAnchorMs(dTo - to <= LIVE_SNAP_MS ? null : to);
   }, []);
 
+  const emitRangeSelection = useCallback((
+    rangeFromMs = fromMs,
+    rangeToMs = toMs,
+    rangeWidthMs = effectiveWidthMs
+  ) => {
+    if (!hasData || rangeToMs <= rangeFromMs) return;
+
+    const key = `${Math.round(rangeFromMs)}:${Math.round(rangeToMs)}`;
+    if (lastEmittedRangeRef.current === key) return;
+    lastEmittedRangeRef.current = key;
+
+    onRangeChange?.({
+      since: new Date(rangeFromMs).toISOString(),
+      until: new Date(rangeToMs).toISOString(),
+      rangeLabel: formatRange(rangeFromMs, rangeToMs),
+      widthLabel: formatWidth(rangeWidthMs),
+    });
+  }, [effectiveWidthMs, fromMs, hasData, onRangeChange, toMs]);
+
+  useEffect(() => {
+    if (!rangeIntentRef.current || !hasData) return;
+    if (rangeNotifyTimerRef.current) clearTimeout(rangeNotifyTimerRef.current);
+
+    rangeNotifyTimerRef.current = setTimeout(() => {
+      emitRangeSelection();
+      rangeIntentRef.current = false;
+    }, 220);
+
+    return () => {
+      if (rangeNotifyTimerRef.current) clearTimeout(rangeNotifyTimerRef.current);
+    };
+  }, [emitRangeSelection, hasData]);
+
+  useEffect(() => {
+    return () => {
+      if (rangeNotifyTimerRef.current) clearTimeout(rangeNotifyTimerRef.current);
+    };
+  }, []);
+
   // Wheel: zoom (cursor-anchored) or pan (shift / horizontal trackpad).
   // Needs a native listener with passive: false to call preventDefault.
   useEffect(() => {
@@ -144,6 +195,7 @@ export default function SevenDayChart({ points }: Props) {
       const width = t - f;
       if (width <= 0) return;
       event.preventDefault();
+      rangeIntentRef.current = true;
 
       const rect = el.getBoundingClientRect();
       const frac = clamp((event.clientX - rect.left) / rect.width, 0, 1);
@@ -195,6 +247,7 @@ export default function SevenDayChart({ points }: Props) {
     const deltaPx = event.clientX - drag.startClientX;
     if (!drag.moved && Math.abs(deltaPx) < DRAG_START_PX) return;
     drag.moved = true;
+    rangeIntentRef.current = true;
     const width = drag.startToMs - drag.startFromMs;
     const panMs = -(deltaPx / rect.width) * width;
     applyRange(drag.startFromMs + panMs, drag.startToMs + panMs);
@@ -210,12 +263,20 @@ export default function SevenDayChart({ points }: Props) {
   const selectPreset = useCallback((presetKey: PresetKey) => {
     const preset = PRESETS.find((p) => p.key === presetKey);
     if (!preset) return;
+    rangeIntentRef.current = true;
     setWindowMs(preset.ms);
     setAnchorMs(null);
     try { window.sessionStorage.setItem(STORAGE_KEY, preset.key); } catch { /* noop */ }
-  }, []);
+    const to = dataToMs || Date.now();
+    const from = Math.max(dataFromMs || to - preset.ms, to - preset.ms);
+    emitRangeSelection(from, to, to - from);
+    rangeIntentRef.current = false;
+  }, [dataFromMs, dataToMs, emitRangeSelection]);
 
-  const goLive = useCallback(() => setAnchorMs(null), []);
+  const goLive = useCallback(() => {
+    rangeIntentRef.current = true;
+    setAnchorMs(null);
+  }, []);
 
   const handleDoubleClick = useCallback(() => {
     selectPreset(DEFAULT_PRESET.key);
@@ -229,6 +290,7 @@ export default function SevenDayChart({ points }: Props) {
       case 'ArrowLeft':
       case 'ArrowRight': {
         event.preventDefault();
+        rangeIntentRef.current = true;
         const dir = event.key === 'ArrowRight' ? 1 : -1;
         const step = width * 0.2 * dir;
         applyRange(f + step, t + step);
@@ -237,6 +299,7 @@ export default function SevenDayChart({ points }: Props) {
       case '+':
       case '=': {
         event.preventDefault();
+        rangeIntentRef.current = true;
         const center = (f + t) / 2;
         const w = clamp(width / 1.5, MIN_WINDOW_MS, MAX_WINDOW_MS);
         applyRange(center - w / 2, center + w / 2);
@@ -245,6 +308,7 @@ export default function SevenDayChart({ points }: Props) {
       case '-':
       case '_': {
         event.preventDefault();
+        rangeIntentRef.current = true;
         const center = (f + t) / 2;
         const w = clamp(width * 1.5, MIN_WINDOW_MS, MAX_WINDOW_MS);
         applyRange(center - w / 2, center + w / 2);
@@ -275,9 +339,9 @@ export default function SevenDayChart({ points }: Props) {
       <div className="chart-toolbar">
         <div className="chart-toolbar-info">
           <span className="chart-range-label">
-            {hasData ? formatRange(fromMs, toMs) : '—'}
+            {rangeLabel}
           </span>
-          <span className="chart-range-width">· {formatWidth(effectiveWidthMs)}</span>
+          <span className="chart-range-width">· {widthLabel}</span>
         </div>
         <div className="chart-toolbar-status">
           <span className={`chart-live-badge ${isLive ? 'live' : 'paused'}`}>
@@ -326,12 +390,12 @@ export default function SevenDayChart({ points }: Props) {
         {hasData ? (
           <ResponsiveContainer>
             <AreaChart data={visible} margin={{ top: 12, right: 4, left: -18, bottom: 0 }}>
-              <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="2 4" vertical={false} />
+              <CartesianGrid stroke="#e6e5dd" strokeDasharray="2 4" vertical={false} />
               <XAxis
                 dataKey="bucket"
                 axisLine={false}
                 tickLine={false}
-                tick={{ fill: '#9aa3ae', fontSize: 12 }}
+                tick={{ fill: '#7c828a', fontSize: 12 }}
                 minTickGap={52}
                 interval="preserveStartEnd"
                 tickFormatter={(v: string) => formatTick(v, effectiveWidthMs)}
@@ -341,36 +405,36 @@ export default function SevenDayChart({ points }: Props) {
                 allowDecimals={false}
                 axisLine={false}
                 tickLine={false}
-                tick={{ fill: '#9aa3ae', fontSize: 12 }}
+                tick={{ fill: '#7c828a', fontSize: 12 }}
                 width={36}
                 domain={[0, 'auto']}
                 tickMargin={6}
               />
               <Tooltip
-                cursor={{ stroke: 'rgba(163, 230, 53, 0.5)', strokeWidth: 1 }}
+                cursor={{ stroke: '#15171a', strokeWidth: 1 }}
                 contentStyle={{
-                  background: '#05060a',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  borderRadius: 8,
-                  boxShadow: '0 18px 40px rgba(0,0,0,0.6)',
+                  background: '#15171a',
+                  border: '1px solid #15171a',
+                  borderRadius: 6,
+                  boxShadow: '0 14px 34px rgba(21,23,26,0.24)',
                   fontSize: 12,
                   padding: '8px 10px',
-                  color: '#eef0f3',
+                  color: '#fafaf7',
                 }}
-                labelStyle={{ color: '#9aa3ae', fontSize: 11, marginBottom: 4 }}
-                itemStyle={{ color: '#eef0f3', padding: 0 }}
+                labelStyle={{ color: 'rgba(250,250,247,0.66)', fontSize: 11, marginBottom: 4 }}
+                itemStyle={{ color: '#fafaf7', padding: 0 }}
                 formatter={(value) => [value, 'Prodotti']}
                 labelFormatter={(v: string) => TOOLTIP_FMT.format(new Date(v))}
               />
               <Area
                 type="monotone"
                 dataKey="added"
-                stroke="#a3e635"
+                stroke="#2563eb"
                 strokeWidth={2}
-                fill="#a3e635"
-                fillOpacity={0.1}
+                fill="#2563eb"
+                fillOpacity={0.12}
                 isAnimationActive={false}
-                activeDot={{ r: 4, fill: '#a3e635', stroke: '#0a0b0d', strokeWidth: 2 }}
+                activeDot={{ r: 4, fill: '#2563eb', stroke: '#ffffff', strokeWidth: 2 }}
               />
             </AreaChart>
           </ResponsiveContainer>

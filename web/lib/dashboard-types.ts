@@ -3,6 +3,13 @@ export type ChartPoint = {
   added: number;
 };
 
+export type TimeFilter = {
+  since: string; // ISO
+  until: string; // ISO
+  source?: 'chart' | 'heatmap';
+  label?: string;
+};
+
 export type ChartResponse = {
   points: ChartPoint[];
 };
@@ -26,6 +33,13 @@ export type DashboardProduct = {
   event_time: string;
   image_url: string | null;
   detail_url: string;
+};
+
+export type ProductsResponse = {
+  products: DashboardProduct[];
+  offset: number;
+  limit: number;
+  total: number;
 };
 
 export type SnapshotResponse = {

@@ -3,19 +3,13 @@ import { loadHealth, loadMoreProducts, loadSnapshot } from '@/lib/dashboard-data
 import { pingDatabase } from '@/lib/db';
 import type {
   ChartResponse,
-  DashboardProduct,
   HealthResponse,
   ProductSortMode,
+  ProductsResponse,
   QueueCode,
   SnapshotResponse,
 } from '@/lib/dashboard-types';
 import { QUEUE_ORDER } from '@/lib/queues';
-
-type ProductsResponse = {
-  products: DashboardProduct[];
-  offset: number;
-  limit: number;
-};
 
 type LoadProductsQuery = {
   offset: number;
@@ -23,6 +17,8 @@ type LoadProductsQuery = {
   search?: string;
   sort?: ProductSortMode;
   queue?: QueueCode;
+  since?: string;
+  until?: string;
 };
 
 const DAY_FORMATTER = new Intl.DateTimeFormat('it-IT', {
@@ -75,6 +71,39 @@ async function fetchRemoteJson<T>(pathAndSearch: string): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+function buildProductsParams(
+  query: LoadProductsQuery
+): URLSearchParams {
+  const params = new URLSearchParams({
+    offset: String(query.offset),
+    limit: String(query.limit),
+    sort: query.sort ?? 'newest',
+  });
+
+  const search = query.search?.trim();
+  if (search) {
+    params.set('search', search);
+  }
+  if (query.queue) {
+    params.set('queue', query.queue);
+  }
+  if (query.since) {
+    params.set('since', query.since);
+  }
+  if (query.until) {
+    params.set('until', query.until);
+  }
+
+  return params;
+}
+
+async function fetchRemoteProductsPage(
+  query: LoadProductsQuery
+): Promise<ProductsResponse> {
+  const params = buildProductsParams(query);
+  return fetchRemoteJson<ProductsResponse>(`/api/products?${params.toString()}`);
 }
 
 function createEmptyDailyCounts(): SnapshotResponse['daily_counts'] {
@@ -185,29 +214,24 @@ export async function loadProductsForApp(
   query: LoadProductsQuery
 ): Promise<ProductsResponse> {
   if (!hasRemoteDashboard()) {
-    const products = await loadMoreProducts(query);
+    const { products, total } = await loadMoreProducts({
+      offset: query.offset,
+      limit: query.limit,
+      search: query.search,
+      sort: query.sort,
+      queue: query.queue,
+      since: query.since,
+      until: query.until,
+    });
     return {
       products,
       offset: query.offset,
       limit: query.limit,
+      total,
     };
   }
 
-  const params = new URLSearchParams({
-    offset: String(query.offset),
-    limit: String(query.limit),
-    sort: query.sort ?? 'newest',
-  });
-
-  const search = query.search?.trim();
-  if (search) {
-    params.set('search', search);
-  }
-  if (query.queue) {
-    params.set('queue', query.queue);
-  }
-
-  return fetchRemoteJson<ProductsResponse>(`/api/products?${params.toString()}`);
+  return fetchRemoteProductsPage(query);
 }
 
 export async function pingDashboardSource(): Promise<void> {

@@ -19,12 +19,20 @@ export async function GET(request: Request): Promise<Response> {
   const search = searchParams.get('search')?.trim() ?? '';
   const sortParam = searchParams.get('sort');
   const queueParam = searchParams.get('queue');
+  const sinceParam = searchParams.get('since');
+  const untilParam = searchParams.get('until');
   const sort = SORT_MODES.has(sortParam as ProductSortMode)
     ? (sortParam as ProductSortMode)
     : 'newest';
   const queue = QUEUE_CODES.has(queueParam as QueueCode)
     ? (queueParam as QueueCode)
     : undefined;
+
+  const isValidDate = (v: string | null): v is string =>
+    v !== null && Number.isFinite(Date.parse(v));
+
+  const since = isValidDate(sinceParam) ? sinceParam : undefined;
+  const until = isValidDate(untilParam) ? untilParam : undefined;
 
   try {
     const body = await loadProductsForApp({
@@ -33,6 +41,8 @@ export async function GET(request: Request): Promise<Response> {
       search,
       sort,
       queue,
+      since,
+      until,
     });
     return NextResponse.json(
       body,

@@ -4,10 +4,12 @@ import {
   startTransition,
   useDeferredValue,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
 import SevenDayChart from '@/components/SevenDayChart';
+import HourlyHeatmap from '@/components/HourlyHeatmap';
 import { QUEUE_ORDER, queueLabel } from '@/lib/queues';
 import type {
   ChartPoint,
@@ -15,8 +17,10 @@ import type {
   DashboardProduct,
   HealthResponse,
   ProductSortMode,
+  ProductsResponse,
   QueueCode,
   SnapshotResponse,
+  TimeFilter,
 } from '@/lib/dashboard-types';
 import type {
   LiveCollectorStatusEvent,
@@ -44,6 +48,17 @@ const MONITORING_TOOLTIP_COPY =
   'Per la natura del monitoraggio alcuni oggetti possono non essere rilevati correttamente dal sistema.';
 const BEEP_COOLDOWN_MS = 250;
 const PAGE_SIZE = 20;
+const DAY_LABELS = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
+const FILTER_DATETIME_FORMATTER = new Intl.DateTimeFormat('it-IT', {
+  day: '2-digit',
+  month: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+const FILTER_TIME_FORMATTER = new Intl.DateTimeFormat('it-IT', {
+  hour: '2-digit',
+  minute: '2-digit',
+});
 
 function getAudioContextCtor(): AudioContextCtor | null {
   if (typeof window === 'undefined') return null;
@@ -65,12 +80,14 @@ function buildProductsSearchParams({
   queueFilter,
   search,
   sortMode,
+  timeFilter,
 }: {
   offset: number;
   limit: number;
   queueFilter: QueueFilter;
   search: string;
   sortMode: ProductSortMode;
+  timeFilter: TimeFilter | null;
 }): string {
   const params = new URLSearchParams({
     offset: String(offset),
@@ -79,6 +96,10 @@ function buildProductsSearchParams({
   });
   if (search) params.set('search', search);
   if (queueFilter !== 'ALL') params.set('queue', queueFilter);
+  if (timeFilter) {
+    params.set('since', timeFilter.since);
+    params.set('until', timeFilter.until);
+  }
   return params.toString();
 }
 
@@ -115,6 +136,14 @@ function formatMoney(value: number | null, currency: string | null): string {
 
 function compactNumber(value: number): string {
   return value.toLocaleString('it-IT');
+}
+
+function padHour(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+function formatFilterRange(since: string, until: string): string {
+  return `${FILTER_DATETIME_FORMATTER.format(new Date(since))} -> ${FILTER_DATETIME_FORMATTER.format(new Date(until))}`;
 }
 
 function isLastChanceQueue(queue: string | null | undefined): boolean {
@@ -335,18 +364,32 @@ function isCollectorStatusEvent(payload: unknown): payload is LiveCollectorStatu
 }
 
 export default function DashboardShell({ initialSnapshot, initialHealth }: Props) {
+  const initialNowMs = useMemo(() => {
+    const snapshotMs = new Date(initialSnapshot.as_of).getTime();
+    if (Number.isFinite(snapshotMs)) return snapshotMs;
+    const healthMs = new Date(initialHealth.as_of).getTime();
+    if (Number.isFinite(healthMs)) return healthMs;
+    return 0;
+  }, [initialHealth.as_of, initialSnapshot.as_of]);
+
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [health, setHealth] = useState(initialHealth);
   const [search, setSearch] = useState('');
   const [queueFilter, setQueueFilter] = useState<QueueFilter>('ALL');
   const [sortMode, setSortMode] = useState<ProductSortMode>('newest');
   const [products, setProducts] = useState<DashboardProduct[]>(initialSnapshot.recent_products);
-  const [hasMore, setHasMore] = useState(initialSnapshot.recent_products.length === PAGE_SIZE);
+  const [productsTotal, setProductsTotal] = useState(
+    Number.isFinite(initialSnapshot.total_products) ? initialSnapshot.total_products : 0
+  );
+  const [hasMore, setHasMore] = useState(initialSnapshot.recent_products.length < initialSnapshot.total_products);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isRefreshingProducts, setIsRefreshingProducts] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState(initialNowMs);
   const [isSyncing, setIsSyncing] = useState(false);
   const [chartPoints, setChartPoints] = useState<ChartPoint[]>([]);
+  const [timeFilter, setTimeFilter] = useState<TimeFilter | null>(null);
+  const [pickedCell, setPickedCell] = useState<{ dow: number; bIdx: number } | null>(null);
+  const [tickerItem, setTickerItem] = useState<DashboardProduct | null>(null);
   const deferredSearch = useDeferredValue(search.trim());
 
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -358,14 +401,18 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
   const productsRequestIdRef = useRef(0);
   const hasInitializedProductsRef = useRef(false);
   const productsLengthRef = useRef(initialSnapshot.recent_products.length);
+  const pendingTickerAsinRef = useRef<string | null>(null);
+  const tickerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const productsQueryRef = useRef<{
     queueFilter: QueueFilter;
     search: string;
     sortMode: ProductSortMode;
+    timeFilter: TimeFilter | null;
   }>({
     queueFilter: 'ALL',
     search: '',
     sortMode: 'newest',
+    timeFilter: null,
   });
 
   const primeAudioContext = async (): Promise<AudioContext | null> => {
@@ -465,6 +512,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
           queueFilter: query.queueFilter,
           search: query.search,
           sortMode: query.sortMode,
+          timeFilter: query.timeFilter,
         })}`,
         {
           cache: 'no-store',
@@ -472,15 +520,28 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
         }
       );
       if (!response.ok) return;
-      const data = (await response.json()) as { products: DashboardProduct[]; limit: number };
+      const data = (await response.json()) as ProductsResponse;
       if (productsRequestIdRef.current !== requestId) return;
       startTransition(() => {
         setProducts((current) => {
           const next = replace ? data.products : [...current, ...data.products];
           productsLengthRef.current = next.length;
+          // Resolve pending ticker: find freshly-arrived product
+          const pending = pendingTickerAsinRef.current;
+          if (pending && replace) {
+            const match = next.find(p => p.asin === pending);
+            if (match) {
+              pendingTickerAsinRef.current = null;
+              setTickerItem(match);
+              if (tickerTimerRef.current) clearTimeout(tickerTimerRef.current);
+              tickerTimerRef.current = setTimeout(() => setTickerItem(null), 4500);
+            }
+          }
           return next;
         });
-        setHasMore(data.products.length === data.limit);
+        const nextTotal = Number.isFinite(data.total) ? data.total : 0;
+        setProductsTotal(nextTotal);
+        setHasMore(offset + data.products.length < nextTotal);
       });
     } catch (error) {
       if (!isAbortError(error)) {
@@ -511,6 +572,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
       productsAbortRef.current?.abort();
       if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
       if (productsRefreshTimeoutRef.current) clearTimeout(productsRefreshTimeoutRef.current);
+      if (tickerTimerRef.current) clearTimeout(tickerTimerRef.current);
       const context = audioContextRef.current;
       audioContextRef.current = null;
       if (!context) return;
@@ -558,13 +620,14 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
       queueFilter,
       search: deferredSearch,
       sortMode,
+      timeFilter,
     };
     if (!hasInitializedProductsRef.current) {
       hasInitializedProductsRef.current = true;
       return;
     }
     void refreshProducts(PAGE_SIZE);
-  }, [deferredSearch, queueFilter, sortMode]);
+  }, [deferredSearch, queueFilter, sortMode, timeFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -620,6 +683,8 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
             void playNotificationBeep(
               isLastChanceQueue(payload.queue) ? 'last_chance' : 'default'
             );
+            // Stage the asin for ticker display once the products refresh resolves
+            pendingTickerAsinRef.current = payload.a;
             scheduleSnapshotRefresh();
             scheduleProductsRefresh();
             return;
@@ -696,16 +761,95 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     await fetchProducts({ offset: products.length, limit: PAGE_SIZE, replace: false });
   };
 
+  const handleChartRangeChange = (selection: {
+    since: string;
+    until: string;
+    rangeLabel: string;
+    widthLabel: string;
+  }) => {
+    setTimeFilter({
+      since: selection.since,
+      until: selection.until,
+      source: 'chart',
+      label: `Grafico · ${selection.rangeLabel} (${selection.widthLabel})`,
+    });
+    setPickedCell(null);
+  };
+
+  const handlePickCell = (dow: number, bIdx: number) => {
+    if (pickedCell?.dow === dow && pickedCell?.bIdx === bIdx) {
+      // Toggle off
+      setPickedCell(null);
+      setTimeFilter(null);
+      return;
+    }
+    // Find the most recent occurrence of this (dow, bIdx) in the last 7 days
+    const nowMs = Date.now();
+    const bucketHours = bIdx * 3;
+    let targetMs: number | null = null;
+    for (let daysAgo = 0; daysAgo <= 6; daysAgo++) {
+      const candidate = new Date(nowMs - daysAgo * 86_400_000);
+      if (candidate.getDay() === dow) {
+        candidate.setHours(bucketHours, 0, 0, 0);
+        if (candidate.getTime() <= nowMs) {
+          targetMs = candidate.getTime();
+          break;
+        }
+      }
+    }
+    if (targetMs === null) return;
+    const sinceMs = targetMs;
+    const untilMs = targetMs + 3 * 3600_000;
+    const since = new Date(sinceMs).toISOString();
+    const until = new Date(untilMs).toISOString();
+    const hourLabel = `${padHour(bucketHours)}:00-${padHour((bucketHours + 3) % 24)}:00`;
+    const dateLabel = FILTER_DATETIME_FORMATTER.format(new Date(sinceMs));
+    const untilLabel = FILTER_TIME_FORMATTER.format(new Date(untilMs));
+    setPickedCell({ dow, bIdx });
+    setTimeFilter({
+      since,
+      until,
+      source: 'heatmap',
+      label: `Heatmap · ${DAY_LABELS[dow]} ${hourLabel} (${dateLabel} -> ${untilLabel})`,
+    });
+  };
+
+  const clearFilters = () => {
+    setTimeFilter(null);
+    setPickedCell(null);
+    setQueueFilter('ALL');
+    setSearch('');
+  };
+
   const tone = dashboardTone(health);
   const latestEventTime = snapshot.recent_products[0]?.event_time ?? health.last_event_time;
   const queueCounts = new Map<QueueCode, number>(
     snapshot.queue_totals.map(({ queue, count }) => [queue, count])
   );
-  const strongestBucket = snapshot.hourly_activity_24h.reduce(
-    (best, bucket) => (bucket.added > best.added ? bucket : best),
-    snapshot.hourly_activity_24h[0] ?? { bucket: '', label: '—', added: 0 }
+  const visibleProducts = useMemo(() => {
+    const normalizedSearch = deferredSearch.toLowerCase();
+    const sinceMs = timeFilter ? new Date(timeFilter.since).getTime() : null;
+    const untilMs = timeFilter ? new Date(timeFilter.until).getTime() : null;
+
+    return products.filter((product) => {
+      if (queueFilter !== 'ALL' && product.queue !== queueFilter) return false;
+      if (normalizedSearch) {
+        const asin = product.asin.toLowerCase();
+        const title = product.title?.toLowerCase() ?? '';
+        if (!asin.includes(normalizedSearch) && !title.includes(normalizedSearch)) return false;
+      }
+      if (sinceMs !== null || untilMs !== null) {
+        const productMs = new Date(product.event_time).getTime();
+        if (sinceMs !== null && productMs < sinceMs) return false;
+        if (untilMs !== null && productMs > untilMs) return false;
+      }
+      return true;
+    });
+  }, [deferredSearch, products, queueFilter, timeFilter]);
+  const hasActiveFilters = Boolean(
+    timeFilter || pickedCell || queueFilter !== 'ALL' || deferredSearch
   );
-  const maxHourlyCount = Math.max(...snapshot.hourly_activity_24h.map((bucket) => bucket.added), 0);
+  const showProductsLoading = isRefreshingProducts && visibleProducts.length === 0;
   const liveQuality = qualityLabel(health.data_quality_1h);
   const historicalQuality = qualityLabel(snapshot.data_quality);
 
@@ -713,10 +857,10 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     <main className="dashboard-shell">
       <section className="dashboard-head">
         <div className="dashboard-head-copy">
-          <p className="eyebrow">Dashboard monitoraggio live</p>
-          <h1 className="dashboard-title">Dashboard monitoraggio Amazon Vine</h1>
+          <p className="eyebrow">Dashboard live</p>
+          <h1 className="dashboard-title">Monitoraggio Amazon Vine in tempo reale</h1>
           <p className="dashboard-subtitle">
-            Attività in tempo reale, qualità dati e feed prodotti in un layout operativo più compatto.
+            Timeline, pattern di drop e feed prodotti in un layout operativo ispirato a Vine Stats.
           </p>
         </div>
       </section>
@@ -724,11 +868,11 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
       <section className="metric-strip">
         <article className="metric-card metric-card-accent">
           <div className="metric-topline">
-            <MetricIcon kind="box" />
-            <span className="metric-label">Prodotti trovati</span>
+            <MetricIcon kind="clock" />
+            <span className="metric-label">Tempo dall&apos;ultimo drop</span>
           </div>
-          <strong className="metric-value">{compactNumber(snapshot.added_7d)}</strong>
-          <p className="metric-sub">ultimi 7 giorni</p>
+          <strong className="metric-value">{relTime(latestEventTime, now)}</strong>
+          <p className="metric-sub">ultimo item rilevato dal collector</p>
         </article>
         <article className="metric-card">
           <div className="metric-topline">
@@ -771,11 +915,11 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
         </article>
         <article className="metric-card">
           <div className="metric-topline">
-            <MetricIcon kind="clock" />
-            <span className="metric-label">Ultimo aggiornamento</span>
+            <MetricIcon kind="box" />
+            <span className="metric-label">Totale 7g</span>
           </div>
-          <strong className="metric-value">{relTime(latestEventTime, now)}</strong>
-          <p className="metric-sub">ultimo item rilevato</p>
+          <strong className="metric-value">{compactNumber(snapshot.added_7d)}</strong>
+          <p className="metric-sub">prodotti trovati</p>
         </article>
       </section>
 
@@ -792,55 +936,63 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
               <InfoTooltip />
             </span>
           </div>
-          <SevenDayChart points={chartPoints} />
+          <SevenDayChart points={chartPoints} onRangeChange={handleChartRangeChange} />
         </article>
       </section>
+
+      {hasActiveFilters && (
+        <div className="active-filter-banner">
+          <div className="active-filter-banner-chips">
+            <span className="active-filter-label">Filtri attivi ·</span>
+            {queueFilter !== 'ALL' && (
+              <span className="active-filter-chip">
+                coda {queueLabel(queueFilter)}
+              </span>
+            )}
+            {deferredSearch && (
+              <span className="active-filter-chip">
+                ricerca "{deferredSearch}"
+              </span>
+            )}
+            {timeFilter && (
+              <span className="active-filter-chip">
+                {timeFilter.label ?? formatFilterRange(timeFilter.since, timeFilter.until)}
+              </span>
+            )}
+            {pickedCell && !timeFilter && (
+              <span className="active-filter-chip">
+                {DAY_LABELS[pickedCell.dow]}
+                {' '}
+                {padHour(pickedCell.bIdx * 3)}:00-{padHour((pickedCell.bIdx * 3 + 3) % 24)}:00
+              </span>
+            )}
+            <span className="active-filter-label">
+              · {(Number.isFinite(productsTotal) ? productsTotal : 0).toLocaleString('it-IT')} risultati
+            </span>
+          </div>
+          <button type="button" className="active-filter-clear" onClick={clearFilters}>
+            cancella ✕
+          </button>
+        </div>
+      )}
 
       <section className="detail-grid">
         <article className="panel rail-panel heatmap-panel">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">ULTIME 24 ORE</p>
-              <h2 className="panel-title">Heatmap oraria</h2>
+              <p className="eyebrow">PATTERN 7G × 3H</p>
+              <h2 className="panel-title">Heatmap attività</h2>
             </div>
-          </div>
-
-          <div className="heatmap-summary">
-            <span className="heatmap-summary-label">Fascia più attiva</span>
-            <strong>
-              {strongestBucket.added > 0 ? strongestBucket.label : 'Nessun drop'}
-            </strong>
-            <span>
-              {strongestBucket.added > 0
-                ? `${compactNumber(strongestBucket.added)} prodotti`
-                : 'nessun prodotto rilevato'}
+            <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace' }}>
+              click cella per filtrare
             </span>
           </div>
-
-          <div className="heatmap-grid">
-            {snapshot.hourly_activity_24h.map((bucket) => {
-              const intensity = maxHourlyCount > 0 ? bucket.added / maxHourlyCount : 0;
-              const background =
-                bucket.added === 0
-                  ? 'var(--surface-2)'
-                  : `rgba(163, 230, 53, ${0.08 + intensity * 0.22})`;
-              const borderColor =
-                bucket.added === 0
-                  ? 'var(--border)'
-                  : `rgba(163, 230, 53, ${0.2 + intensity * 0.3})`;
-
-              return (
-                <div
-                  key={bucket.bucket}
-                  className={`heatmap-cell ${bucket.added > 0 ? 'active' : ''}`}
-                  style={{ background, borderColor }}
-                >
-                  <span className="heatmap-hour">{bucket.label}</span>
-                  <strong className="heatmap-count">{compactNumber(bucket.added)}</strong>
-                </div>
-              );
-            })}
-          </div>
+          <HourlyHeatmap
+            chartPoints={chartPoints}
+            now={now}
+            selectedCell={pickedCell}
+            onPickCell={handlePickCell}
+          />
         </article>
 
         <article className="panel rail-panel status-panel">
@@ -892,12 +1044,14 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
             <input
               className="search-input"
               type="search"
+              aria-label="Cerca prodotti per titolo o ASIN"
               placeholder="Cerca titolo o ASIN"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
             <select
               className="sort-select"
+              aria-label="Ordina prodotti"
               value={sortMode}
               onChange={(event) => setSortMode(event.target.value as ProductSortMode)}
             >
@@ -911,7 +1065,9 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
         <div className="queue-filter-row">
           {QUEUE_FILTERS.map((queue) => {
             const count =
-              queue === 'ALL'
+              queue === queueFilter
+                ? productsTotal
+                : queue === 'ALL'
                 ? snapshot.total_products
                 : queueCounts.get(queue) ?? 0;
 
@@ -921,22 +1077,29 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
                 type="button"
                 className={`queue-pill ${queueFilter === queue ? 'active' : ''}`}
                 data-queue={queue}
+                aria-pressed={queueFilter === queue}
                 onClick={() => setQueueFilter(queue)}
               >
                 {queueLabel(queue)}
-                <span>{count}</span>
+                <span>
+                  {count}
+                </span>
               </button>
             );
           })}
         </div>
 
         <div className="products-grid">
-          {products.length === 0 ? (
+          {showProductsLoading ? (
+            <div className="empty-state">
+              Caricamento prodotti per il periodo selezionato…
+            </div>
+          ) : visibleProducts.length === 0 ? (
             <div className="empty-state">
               Nessun prodotto corrisponde ai filtri correnti.
             </div>
           ) : (
-            products.map((product) => {
+            visibleProducts.map((product) => {
               const isFresh = now - new Date(product.event_time).getTime() < 90_000;
 
               return (
@@ -946,6 +1109,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
                   href={product.detail_url}
                   target="_blank"
                   rel="noreferrer"
+                  aria-label={`${product.title || product.asin}, ${queueLabel(product.queue)}, ${formatMoney(product.item_value, product.currency)}`}
                 >
                   <div className="product-thumb">
                     {product.image_url ? (
@@ -953,13 +1117,13 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
                     ) : (
                       <span>{product.asin.slice(0, 6)}</span>
                     )}
+                    <span className={`queue-badge queue-${product.queue.toLowerCase()}`}>
+                      {queueLabel(product.queue)}
+                    </span>
                   </div>
 
                   <div className="product-body">
                     <div className="product-topline">
-                      <span className={`queue-badge queue-${product.queue.toLowerCase()}`}>
-                        {queueLabel(product.queue)}
-                      </span>
                       <span className="product-asin">{product.asin}</span>
                     </div>
                     <h3 className="product-title">{product.title || 'Titolo non disponibile'}</h3>
@@ -994,6 +1158,24 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
         <span>Monitoraggio continuo in tempo reale. Dati a scopo informativo.</span>
         <span>Non affiliato con Amazon.</span>
       </footer>
+
+      {/* Live ticker popup */}
+      <div className={`live-ticker ${tickerItem ? 'show' : ''}`} aria-live="polite" aria-atomic="true">
+        <div className="live-ticker-thumb">
+          {tickerItem?.image_url ? (
+            <img src={tickerItem.image_url} alt="" />
+          ) : (
+            <span className="live-ticker-thumb-placeholder">{tickerItem?.asin?.slice(0, 6) ?? ''}</span>
+          )}
+        </div>
+        <div className="live-ticker-body">
+          <div className="live-ticker-queue">+ {tickerItem ? queueLabel(tickerItem.queue) : ''}</div>
+          <div className="live-ticker-title">{tickerItem?.title ?? 'Nuovo prodotto'}</div>
+          <div className="live-ticker-price">
+            {tickerItem ? formatMoney(tickerItem.item_value, tickerItem.currency) : ''}
+          </div>
+        </div>
+      </div>
     </main>
   );
 }

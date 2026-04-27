@@ -73,6 +73,13 @@ type ProductQuery = {
   search?: string;
   sort?: ProductSortMode;
   queue?: QueueCode;
+  since?: string; // ISO — inclusive lower bound on event_time
+  until?: string; // ISO — inclusive upper bound on event_time
+};
+
+type ProductQueryFilters = {
+  conditions: string[];
+  params: Array<number | string>;
 };
 
 function createEmptyDailyCounts(): SnapshotResponse['daily_counts'] {
@@ -180,6 +187,37 @@ function extractImageUrl(value: unknown, depth = 0): string | null {
     if (found) return found;
   }
   return null;
+}
+
+function buildProductQueryFilters(query: ProductQuery): ProductQueryFilters {
+  const params: Array<number | string> = [];
+  const conditions = [`event_type = 'item_added'`];
+  const search = query.search?.trim();
+
+  if (search) {
+    params.push(`%${escapeLikePattern(search)}%`);
+    const searchParam = `$${params.length}`;
+    conditions.push(
+      `(asin ILIKE ${searchParam} ESCAPE '\\' OR coalesce(title, '') ILIKE ${searchParam} ESCAPE '\\')`
+    );
+  }
+
+  if (query.queue) {
+    params.push(query.queue);
+    conditions.push(`${NORMALIZED_QUEUE_SQL} = $${params.length}`);
+  }
+
+  if (query.since) {
+    params.push(query.since);
+    conditions.push(`event_time >= $${params.length}`);
+  }
+
+  if (query.until) {
+    params.push(query.until);
+    conditions.push(`event_time <= $${params.length}`);
+  }
+
+  return { conditions, params };
 }
 
 function mapQueueMix(rows: QueueRow[]): SnapshotResponse['queue_mix_24h'] {
@@ -366,30 +404,24 @@ export async function loadSnapshot(): Promise<SnapshotResponse> {
 
 export async function loadMoreProducts(
   query: ProductQuery
-): Promise<DashboardProduct[]> {
+): Promise<{ products: DashboardProduct[]; total: number }> {
   const pool = getPool();
-  const params: Array<number | string> = [];
-  const conditions = [`event_type = 'item_added'`];
-  const search = query.search?.trim();
   const sort = query.sort ?? 'newest';
+  const { conditions, params } = buildProductQueryFilters(query);
 
-  if (search) {
-    params.push(`%${escapeLikePattern(search)}%`);
-    const searchParam = `$${params.length}`;
-    conditions.push(
-      `(asin ILIKE ${searchParam} ESCAPE '\\' OR coalesce(title, '') ILIKE ${searchParam} ESCAPE '\\')`
-    );
-  }
+  const countResult = await pool.query<{ total: string }>(
+    `
+    SELECT count(*)::text AS total
+    FROM vine_item_events
+    WHERE ${conditions.join('\n      AND ')}
+    `,
+    params
+  );
 
-  if (query.queue) {
-    params.push(query.queue);
-    conditions.push(`${NORMALIZED_QUEUE_SQL} = $${params.length}`);
-  }
-
-  params.push(query.limit, query.offset);
-  const limitParam = `$${params.length - 1}`;
-  const offsetParam = `$${params.length}`;
-  const result = await pool.query<ProductRow>(
+  const pageParams = [...params, query.limit, query.offset];
+  const limitParam = `$${pageParams.length - 1}`;
+  const offsetParam = `$${pageParams.length}`;
+  const productsResult = await pool.query<ProductRow>(
     `
     SELECT
       event_time,
@@ -404,9 +436,13 @@ export async function loadMoreProducts(
     ${productOrderClause(sort)}
     LIMIT ${limitParam} OFFSET ${offsetParam}
     `,
-    params
+    pageParams
   );
-  return result.rows.map(mapProduct);
+
+  return {
+    products: productsResult.rows.map(mapProduct),
+    total: toNumber(countResult.rows[0]?.total),
+  };
 }
 
 export async function loadHealth(): Promise<HealthResponse> {

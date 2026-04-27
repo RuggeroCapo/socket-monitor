@@ -256,7 +256,7 @@ export default function HourlyHeatmap({ chartPoints, now, selectedCell, onPickCe
           </div>
           {tooltip.occurrences > 0 && tooltip.count > 0 && (
             <div className="hm-tooltip-sub">
-              media {Math.round(tooltip.count / tooltip.occurrences).toLocaleString('it-IT')} drop/giorno
+              media {Math.round(tooltip.count / tooltip.occurrences).toLocaleString('it-IT')} Prodotti/giorno
             </div>
           )}
           <div className="hm-tooltip-hint">click per filtrare il feed</div>

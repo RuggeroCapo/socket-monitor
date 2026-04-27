@@ -470,12 +470,12 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     const startAt = context.currentTime;
 
     if (tone === 'last_chance') {
-      playPulse(context, startAt, 659.25, 0.09, 'sine', 0.05);
-      playPulse(context, startAt + 0.11, 987.77, 0.16, 'sine', 0.065);
+      playPulse(context, startAt, 659.25, 0.09, 'sine', 0.09);
+      playPulse(context, startAt + 0.11, 987.77, 0.16, 'sine', 0.11);
       return;
     }
 
-    playPulse(context, startAt, 880, 0.15, 'triangle', 0.028);
+    playPulse(context, startAt, 880, 0.15, 'triangle', 0.055);
   };
 
   const fetchProducts = async ({
@@ -899,7 +899,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
             {formatMoney(snapshot.tracked_value_24h, 'EUR')}
           </strong>
           <p className="metric-sub">
-            media {formatMoney(snapshot.avg_item_value_24h, 'EUR')} / articolo
+            media {formatMoney(snapshot.avg_item_value_24h, 'EUR')} / prodotto
           </p>
         </article>
         <article className="metric-card">

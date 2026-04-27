@@ -15,15 +15,15 @@ const NUM_BUCKETS = 8;
 const NUM_DAYS = 7;
 const BUCKET_HOURS = 3;
 
-// Discrete 5-step cream → red ramp tuned for the light Vine Stats theme.
-const HEAT_EMPTY = '#f7f7f2';
+// Discrete 5-step ramp tuned for the dark dashboard surface.
+const HEAT_EMPTY = '#151a22';
 const HEAT_STEPS = [
-  '#f7f7f2', // 0 — empty
-  '#fde2c7', // 1 — soft amber
-  '#f6b469', // 2 — amber
-  '#e8832f', // 3 — orange
-  '#c2410c', // 4 — burnt orange
-  '#b42318', // 5 — red
+  '#151a22', // 0 — empty
+  '#1f3a2c', // 1 — low activity
+  '#2f6f43', // 2 — active
+  '#a3e635', // 3 — hot
+  '#f59e0b', // 4 — very hot
+  '#fb7185', // 5 — peak
 ];
 
 function heatColor(count: number, max: number): string {
@@ -39,9 +39,9 @@ function heatColor(count: number, max: number): string {
 function heatTextColor(count: number, max: number): string {
   if (max === 0 || count === 0) return 'transparent';
   const t = count / max;
-  if (t < 0.12) return 'rgba(21,23,26,0.46)';
-  if (t < 0.55) return 'rgba(21,23,26,0.72)';
-  return 'rgba(250,250,247,0.94)';
+  if (t < 0.30) return 'rgba(244,247,251,0.82)';
+  if (t < 0.80) return 'rgba(8,10,13,0.86)';
+  return 'rgba(244,247,251,0.94)';
 }
 
 function pad(n: number): string {
@@ -194,10 +194,10 @@ export default function HourlyHeatmap({ chartPoints, now, selectedCell, onPickCe
                     style={{
                       background: bg,
                       outline: isSel
-                        ? '2px solid var(--text)'
+                        ? '2px solid var(--accent)'
                         : isCurrent
-                          ? '2px solid var(--accent)'
-                          : '1px solid rgba(21,23,26,0.06)',
+                          ? '2px solid var(--accent-strong)'
+                          : '1px solid rgba(255,255,255,0.08)',
                       outlineOffset: '-1px',
                     }}
                     onMouseEnter={(e) => handleCellEnter(e, bIdx, dow)}
@@ -269,12 +269,12 @@ export default function HourlyHeatmap({ chartPoints, now, selectedCell, onPickCe
           {
             label: 'Fascia più attiva',
             value: fmtBucketRange(peakBucket),
-            sub: `${bucketTotals[peakBucket].toLocaleString('it-IT')} drop · 7g`,
+            sub: `${bucketTotals[peakBucket].toLocaleString('it-IT')} Prodotti · 7g`,
           },
           {
             label: 'Giorno più attivo',
             value: DAY_SHORT[peakDow],
-            sub: `${dayTotals[peakDow].toLocaleString('it-IT')} drop`,
+            sub: `${dayTotals[peakDow].toLocaleString('it-IT')} Prodotti`,
           },
           {
             label: 'Prossimo picco previsto',

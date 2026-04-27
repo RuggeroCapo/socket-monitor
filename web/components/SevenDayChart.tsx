@@ -62,6 +62,17 @@ const DATETIME_FMT = new Intl.DateTimeFormat('it-IT', {
 const TOOLTIP_FMT = new Intl.DateTimeFormat('it-IT', {
   weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
 });
+const CHART_COLORS = {
+  grid: 'rgba(255,255,255,0.08)',
+  tick: '#778392',
+  cursor: '#a3e635',
+  tooltipBg: '#202833',
+  tooltipBorder: 'rgba(255,255,255,0.15)',
+  tooltipText: '#f4f7fb',
+  tooltipMuted: '#aab4c0',
+  series: '#60a5fa',
+  activeDotStroke: '#0d1117',
+};
 
 function clamp(value: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, value));
@@ -390,12 +401,12 @@ export default function SevenDayChart({ points, onRangeChange }: Props) {
         {hasData ? (
           <ResponsiveContainer>
             <AreaChart data={visible} margin={{ top: 12, right: 4, left: -18, bottom: 0 }}>
-              <CartesianGrid stroke="#e6e5dd" strokeDasharray="2 4" vertical={false} />
+              <CartesianGrid stroke={CHART_COLORS.grid} strokeDasharray="2 4" vertical={false} />
               <XAxis
                 dataKey="bucket"
                 axisLine={false}
                 tickLine={false}
-                tick={{ fill: '#7c828a', fontSize: 12 }}
+                tick={{ fill: CHART_COLORS.tick, fontSize: 12 }}
                 minTickGap={52}
                 interval="preserveStartEnd"
                 tickFormatter={(v: string) => formatTick(v, effectiveWidthMs)}
@@ -405,36 +416,41 @@ export default function SevenDayChart({ points, onRangeChange }: Props) {
                 allowDecimals={false}
                 axisLine={false}
                 tickLine={false}
-                tick={{ fill: '#7c828a', fontSize: 12 }}
+                tick={{ fill: CHART_COLORS.tick, fontSize: 12 }}
                 width={36}
                 domain={[0, 'auto']}
                 tickMargin={6}
               />
               <Tooltip
-                cursor={{ stroke: '#15171a', strokeWidth: 1 }}
+                cursor={{ stroke: CHART_COLORS.cursor, strokeWidth: 1 }}
                 contentStyle={{
-                  background: '#15171a',
-                  border: '1px solid #15171a',
+                  background: CHART_COLORS.tooltipBg,
+                  border: `1px solid ${CHART_COLORS.tooltipBorder}`,
                   borderRadius: 6,
-                  boxShadow: '0 14px 34px rgba(21,23,26,0.24)',
+                  boxShadow: '0 14px 34px rgba(0,0,0,0.4)',
                   fontSize: 12,
                   padding: '8px 10px',
-                  color: '#fafaf7',
+                  color: CHART_COLORS.tooltipText,
                 }}
-                labelStyle={{ color: 'rgba(250,250,247,0.66)', fontSize: 11, marginBottom: 4 }}
-                itemStyle={{ color: '#fafaf7', padding: 0 }}
+                labelStyle={{ color: CHART_COLORS.tooltipMuted, fontSize: 11, marginBottom: 4 }}
+                itemStyle={{ color: CHART_COLORS.tooltipText, padding: 0 }}
                 formatter={(value) => [value, 'Prodotti']}
                 labelFormatter={(v: string) => TOOLTIP_FMT.format(new Date(v))}
               />
               <Area
                 type="monotone"
                 dataKey="added"
-                stroke="#2563eb"
+                stroke={CHART_COLORS.series}
                 strokeWidth={2}
-                fill="#2563eb"
+                fill={CHART_COLORS.series}
                 fillOpacity={0.12}
                 isAnimationActive={false}
-                activeDot={{ r: 4, fill: '#2563eb', stroke: '#ffffff', strokeWidth: 2 }}
+                activeDot={{
+                  r: 4,
+                  fill: CHART_COLORS.series,
+                  stroke: CHART_COLORS.activeDotStroke,
+                  strokeWidth: 2,
+                }}
               />
             </AreaChart>
           </ResponsiveContainer>

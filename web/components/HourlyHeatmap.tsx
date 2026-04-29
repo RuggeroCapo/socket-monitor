@@ -1,7 +1,7 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, MouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, ChangeEvent, MouseEvent } from 'react';
 import type { ChartPoint } from '@/lib/dashboard-types';
 import type { HeatmapPalette } from '@/lib/ui-settings';
 
@@ -100,6 +100,7 @@ type RollingDay = {
   dow: number;
   label: string;
   dateLabel: string;
+  dayNum: string;
   relativeLabel: string;
 };
 
@@ -129,6 +130,7 @@ function buildRollingDays(now: number): RollingDay[] {
       dow: date.getDay(),
       label: DAY_SHORT[date.getDay()],
       dateLabel: `${pad(date.getDate())}/${pad(date.getMonth() + 1)}`,
+      dayNum: String(date.getDate()),
       relativeLabel:
         index === NUM_DAYS - 1
           ? 'oggi'
@@ -175,7 +177,11 @@ export default function HourlyHeatmap({
   onPickCell,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const matrixRef = useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const [armedTouch, setArmedTouch] = useState<{ bIdx: number; dayIndex: number } | null>(null);
+  const [hoverCapable, setHoverCapable] = useState(true);
+  const [showCellCounts, setShowCellCounts] = useState(true);
   const numBuckets = MINUTES_PER_DAY / bucketMinutes;
   const days = useMemo(() => buildRollingDays(now), [now]);
   const dayIndexByKey = useMemo(
@@ -186,13 +192,54 @@ export default function HourlyHeatmap({
     () => Array.from({ length: numBuckets }, (_, index) => index),
     [numBuckets]
   );
-  const bucketGridStyle = useMemo(
-    () => ({
-      gridTemplateColumns: `repeat(${numBuckets}, minmax(${bucketMinutes === 30 ? 13 : 22}px, 1fr))`,
-    }),
-    [bucketMinutes, numBuckets]
-  );
   const bucketOptionIndex = Math.max(0, HEATMAP_BUCKET_OPTIONS.indexOf(bucketMinutes));
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mql = window.matchMedia('(hover: hover) and (pointer: fine)');
+    setHoverCapable(mql.matches);
+    const handler = (event: MediaQueryListEvent) => {
+      setHoverCapable(event.matches);
+      if (event.matches) {
+        setArmedTouch(null);
+        setTooltip(null);
+      }
+    };
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }, []);
+
+  useEffect(() => {
+    if (hoverCapable || !armedTouch) return;
+    const handler = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && wrapRef.current?.contains(target)) return;
+      setArmedTouch(null);
+      setTooltip(null);
+    };
+    document.addEventListener('pointerdown', handler);
+    return () => document.removeEventListener('pointerdown', handler);
+  }, [hoverCapable, armedTouch]);
+
+  useEffect(() => {
+    const matrix = matrixRef.current;
+    if (!matrix) return;
+    const GAP_PX = 3;
+    const MIN_READABLE_CELL_WIDTH = 24;
+
+    const evaluate = () => {
+      const width = matrix.clientWidth;
+      const usableWidth = width - GAP_PX * Math.max(0, numBuckets - 1);
+      const cellWidth = usableWidth / Math.max(1, numBuckets);
+      setShowCellCounts(cellWidth >= MIN_READABLE_CELL_WIDTH);
+    };
+
+    evaluate();
+    if (typeof window === 'undefined' || !('ResizeObserver' in window)) return;
+    const observer = new ResizeObserver(evaluate);
+    observer.observe(matrix);
+    return () => observer.disconnect();
+  }, [numBuckets]);
 
   // grid[bIdx][dayIndex]
   const grid = useMemo<CellData[][]>(() => {
@@ -236,8 +283,11 @@ export default function HourlyHeatmap({
     (currentDate.getHours() * 60 + currentDate.getMinutes()) / bucketMinutes
   );
 
-  const handleCellEnter = (e: MouseEvent<HTMLButtonElement>, bIdx: number, dayIndex: number) => {
-    const cell = e.currentTarget;
+  const positionTooltipForCell = (
+    cell: HTMLButtonElement,
+    bIdx: number,
+    dayIndex: number
+  ) => {
     const wrap = wrapRef.current;
     if (!wrap) return;
     const cr = cell.getBoundingClientRect();
@@ -254,22 +304,67 @@ export default function HourlyHeatmap({
     });
   };
 
+  const handleCellEnter = (e: MouseEvent<HTMLButtonElement>, bIdx: number, dayIndex: number) => {
+    if (!hoverCapable) return;
+    positionTooltipForCell(e.currentTarget, bIdx, dayIndex);
+  };
+
+  const handleCellLeave = () => {
+    if (!hoverCapable) return;
+    setTooltip(null);
+  };
+
+  const handleCellActivate = (
+    e: MouseEvent<HTMLButtonElement>,
+    bIdx: number,
+    dayIndex: number,
+    dayKey: string
+  ) => {
+    if (hoverCapable) {
+      onPickCell(dayKey, bIdx, bucketMinutes);
+      return;
+    }
+    if (armedTouch?.bIdx === bIdx && armedTouch?.dayIndex === dayIndex) {
+      onPickCell(dayKey, bIdx, bucketMinutes);
+      setArmedTouch(null);
+      setTooltip(null);
+      return;
+    }
+    setArmedTouch({ bIdx, dayIndex });
+    positionTooltipForCell(e.currentTarget, bIdx, dayIndex);
+  };
+
+  const commitArmedFilter = () => {
+    if (!armedTouch) return;
+    const day = days[armedTouch.dayIndex];
+    if (!day) return;
+    onPickCell(day.dayKey, armedTouch.bIdx, bucketMinutes);
+    setArmedTouch(null);
+    setTooltip(null);
+  };
+
   const handleBucketSliderChange = (event: ChangeEvent<HTMLInputElement>) => {
     const next = HEATMAP_BUCKET_OPTIONS[Number(event.currentTarget.value)];
     if (next) {
       setTooltip(null);
+      setArmedTouch(null);
       onBucketMinutesChange(next);
     }
   };
 
-  const DAY_AXIS_W = 68;
+  const gridLayoutStyle = useMemo<CSSProperties>(
+    () => ({ ['--hm-buckets' as string]: String(numBuckets) }),
+    [numBuckets]
+  );
 
   return (
     <div className="hm-wrap" ref={wrapRef}>
       <div className="hm-scroll">
-        <div className="hm-grid-layout" style={{
-          gridTemplateColumns: `${DAY_AXIS_W}px minmax(0, 1fr)`,
-        }}>
+        <div
+          className="hm-grid-layout"
+          data-bucket={bucketMinutes}
+          style={gridLayoutStyle}
+        >
           {/* Day labels */}
           <div className="hm-day-axis">
             {days.map((day, dayIndex) => (
@@ -285,15 +380,16 @@ export default function HourlyHeatmap({
               >
                 <span className="hm-day-name">{day.label} {day.dateLabel}</span>
                 <span className="hm-day-meta">{day.relativeLabel}</span>
+                <span className="hm-day-num" aria-hidden="true">{day.dayNum}</span>
               </div>
             ))}
           </div>
 
           {/* Cell grid */}
-          <div className="hm-matrix">
+          <div className="hm-matrix" ref={matrixRef}>
             <div className="hm-cells-col">
               {days.map((day, dayIndex) => (
-                <div key={day.dayKey} className="hm-row" style={bucketGridStyle}>
+                <div key={day.dayKey} className="hm-row">
                   {bucketOrder.map((bIdx) => {
                     const c = grid[bIdx][dayIndex];
                     const isToday = day.dayKey === todayKey;
@@ -332,10 +428,10 @@ export default function HourlyHeatmap({
                         }}
                         aria-label={`${day.label} ${day.dateLabel} ${rangeLabel}: ${c.count.toLocaleString('it-IT')} prodotti`}
                         onMouseEnter={(e) => handleCellEnter(e, bIdx, dayIndex)}
-                        onMouseLeave={() => setTooltip(null)}
-                        onClick={() => onPickCell(day.dayKey, bIdx, bucketMinutes)}
+                        onMouseLeave={handleCellLeave}
+                        onClick={(e) => handleCellActivate(e, bIdx, dayIndex, day.dayKey)}
                       >
-                        {bucketMinutes >= 60 && c.count > 0 && (
+                        {showCellCounts && bucketMinutes >= 60 && c.count > 0 && (
                           <span style={{ color: textColor }} className="hm-cell-count">
                             {c.count > 999 ? `${(c.count / 1000).toFixed(1)}k` : c.count}
                           </span>
@@ -348,7 +444,7 @@ export default function HourlyHeatmap({
             </div>
 
             {/* Hour labels */}
-            <div className="hm-hour-labels" style={bucketGridStyle}>
+            <div className="hm-hour-labels">
               {bucketOrder.map((bIdx) => {
                 const showTick = shouldShowHourTick(bIdx, bucketMinutes);
                 return (
@@ -403,10 +499,13 @@ export default function HourlyHeatmap({
         (() => {
           const day = days[tooltip.dayIndex];
           if (!day) return null;
+          const isArmed =
+            armedTouch?.bIdx === tooltip.bIdx &&
+            armedTouch?.dayIndex === tooltip.dayIndex;
 
           return (
         <div
-          className="hm-tooltip"
+          className={`hm-tooltip${isArmed ? ' is-armed' : ''}`}
           style={{
             left: tooltip.x,
             top: tooltip.above ? tooltip.y - 8 : tooltip.y,
@@ -422,7 +521,21 @@ export default function HourlyHeatmap({
               ? 'nessun drop'
               : `${tooltip.count.toLocaleString('it-IT')} prodotti nel bucket`}
           </div>
-          <div className="hm-tooltip-hint">click per filtrare il feed</div>
+          {isArmed ? (
+            <button
+              type="button"
+              className="hm-tooltip-action"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                commitArmedFilter();
+              }}
+            >
+              Filtra il feed
+            </button>
+          ) : (
+            <div className="hm-tooltip-hint">click per filtrare il feed</div>
+          )}
         </div>
           );
         })()
@@ -432,27 +545,39 @@ export default function HourlyHeatmap({
       <div className="hm-callouts">
         {[
           {
-            label: 'Fascia più attiva',
+            label: 'Fascia più calda',
             value: fmtBucketRange(peakBucket, bucketMinutes),
-            sub: `${bucketTotals[peakBucket].toLocaleString('it-IT')} Prodotti · 7g`,
+            unit: '',
+            meta: [
+              `${Math.round(bucketTotals[peakBucket] / NUM_DAYS).toLocaleString('it-IT')} prodotti in media`,
+            ],
           },
           {
-            label: 'Giorno più attivo',
-            value: days[peakDow]
-              ? `${days[peakDow].label} ${days[peakDow].dateLabel}`
-              : '—',
-            sub: `${dayTotals[peakDow].toLocaleString('it-IT')} Prodotti`,
+            label: 'Giorno più forte',
+            value: dayTotals[peakDow].toLocaleString('it-IT'),
+            unit: 'prod',
+            meta: [days[peakDow] ? `${days[peakDow].label} ${days[peakDow].dateLabel}` : '—'],
           },
           {
-            label: 'Prossimo picco giornaliero',
+            label: 'Prossima finestra utile',
             value: predictNextDailyPeak(chartPoints, now),
-            sub: 'storico 7g · bucket 30m',
+            unit: '',
+            meta: ['storico recente'],
           },
         ].map((item, i) => (
           <div key={i} className="hm-callout-card">
-            <div className="hm-callout-label">{item.label}</div>
-            <div className="hm-callout-value">{item.value}</div>
-            <div className="hm-callout-sub">{item.sub}</div>
+            {item.label && <div className="hm-callout-label">{item.label}</div>}
+            <div className="hm-callout-value-row">
+              <div className="hm-callout-value">{item.value}</div>
+              {item.unit && <div className="hm-callout-unit">{item.unit}</div>}
+            </div>
+            <div className="hm-callout-sub">
+              {item.meta.map((chip) => (
+                <span key={chip} className="hm-callout-chip">
+                  {chip}
+                </span>
+              ))}
+            </div>
           </div>
         ))}
       </div>

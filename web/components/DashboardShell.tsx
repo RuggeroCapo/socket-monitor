@@ -60,6 +60,12 @@ type WindowWithWebkitAudioContext = Window &
   typeof globalThis & {
     webkitAudioContext?: AudioContextCtor;
   };
+type ProductFeedItemProps = {
+  product: DashboardProduct;
+  isFresh: boolean;
+  priceLabel: string;
+  relativeTimeLabel: string;
+};
 
 const QUEUE_FILTERS: QueueFilter[] = ['ALL', ...QUEUE_ORDER.filter((queue) => queue !== 'OTHER')];
 const DISABLED_QUEUE_FILTERS = new Set<QueueFilter>(['RFY']);
@@ -145,22 +151,22 @@ function relTime(iso: string | null, now: number): string {
   return `${Math.round(hours / 24)} g fa`;
 }
 
+function formatDecimalIt(value: number, fractionDigits = 0): string {
+  const [integerPart, decimalPart] = value.toFixed(fractionDigits).split('.');
+  const groupedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  if (!decimalPart) return groupedInteger;
+  return `${groupedInteger},${decimalPart}`;
+}
+
 function formatMoney(value: number | null, currency: string | null): string {
-  if (value == null) return 'Valore n/d';
-  try {
-    return new Intl.NumberFormat('it-IT', {
-      style: 'currency',
-      currency: currency || 'EUR',
-      maximumFractionDigits: 2,
-    }).format(value);
-  } catch {
-    return `${value.toLocaleString('it-IT')} ${currency || 'EUR'}`;
-  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'Valore n/d';
+  const code = currency || 'EUR';
+  return `${formatDecimalIt(value, 2)} ${code === 'EUR' ? '€' : code}`;
 }
 
 function compactNumber(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '0';
-  return value.toLocaleString('it-IT');
+  return formatDecimalIt(value, 0);
 }
 
 function padHour(value: number): string {
@@ -271,6 +277,51 @@ function MetricIcon({ kind }: { kind: MetricIconKind }) {
         )}
       </svg>
     </span>
+  );
+}
+
+function ProductFeedItem({
+  product,
+  isFresh,
+  priceLabel,
+  relativeTimeLabel,
+}: ProductFeedItemProps) {
+  const queueName = queueLabel(product.queue);
+  const title = product.title || 'Titolo non disponibile';
+
+  return (
+    <a
+      className={`product-card ${isFresh ? 'fresh' : ''}`}
+      href={product.detail_url}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={`${title}, ${queueName}, ${priceLabel}`}
+    >
+      <div className="product-thumb">
+        {product.image_url ? (
+          <img src={product.image_url} alt={title} />
+        ) : (
+          <span>{product.asin.slice(0, 6)}</span>
+        )}
+        <span className={`queue-badge queue-${product.queue.toLowerCase()}`}>
+          {queueName}
+        </span>
+      </div>
+
+      <div className="product-body">
+        <div className="product-topline">
+          <span className="product-asin">{product.asin}</span>
+          <span className={`queue-badge queue-inline queue-${product.queue.toLowerCase()}`}>
+            {queueName}
+          </span>
+        </div>
+        <h3 className="product-title">{title}</h3>
+        <div className="product-meta">
+          <span className="product-price">{priceLabel}</span>
+          <span>{relativeTimeLabel}</span>
+        </div>
+      </div>
+    </a>
   );
 }
 
@@ -1022,7 +1073,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
         <article className="metric-card">
           <div className="metric-topline">
             <MetricIcon kind="coin" />
-            <span className="metric-label">Valore totale 24h</span>
+            <span className="metric-label">Valore totale oggi</span>
           </div>
           <strong className="metric-value">
             {formatMoney(snapshot.tracked_value_24h, 'EUR')}
@@ -1184,44 +1235,15 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
               Nessun prodotto corrisponde ai filtri correnti.
             </div>
           ) : (
-            visibleProducts.map((product) => {
-              const isFresh = now - new Date(product.event_time).getTime() < 90_000;
-
-              return (
-                <a
-                  key={`${product.asin}-${product.event_time}`}
-                  className={`product-card ${isFresh ? 'fresh' : ''}`}
-                  href={product.detail_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label={`${product.title || product.asin}, ${queueLabel(product.queue)}, ${formatMoney(product.item_value, product.currency)}`}
-                >
-                  <div className="product-thumb">
-                    {product.image_url ? (
-                      <img src={product.image_url} alt={product.title || product.asin} />
-                    ) : (
-                      <span>{product.asin.slice(0, 6)}</span>
-                    )}
-                    <span className={`queue-badge queue-${product.queue.toLowerCase()}`}>
-                      {queueLabel(product.queue)}
-                    </span>
-                  </div>
-
-                  <div className="product-body">
-                    <div className="product-topline">
-                      <span className="product-asin">{product.asin}</span>
-                    </div>
-                    <h3 className="product-title">{product.title || 'Titolo non disponibile'}</h3>
-                    <div className="product-meta">
-                      <span className="product-price">
-                        {formatMoney(product.item_value, product.currency)}
-                      </span>
-                      <span>{relTime(product.event_time, now)}</span>
-                    </div>
-                  </div>
-                </a>
-              );
-            })
+            visibleProducts.map((product) => (
+              <ProductFeedItem
+                key={`${product.asin}-${product.event_time}`}
+                product={product}
+                isFresh={now - new Date(product.event_time).getTime() < 90_000}
+                priceLabel={formatMoney(product.item_value, product.currency)}
+                relativeTimeLabel={relTime(product.event_time, now)}
+              />
+            ))
           )}
         </div>
 

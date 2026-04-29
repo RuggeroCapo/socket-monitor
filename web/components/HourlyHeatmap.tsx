@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, MouseEvent } from 'react';
 import type { ChartPoint } from '@/lib/dashboard-types';
+import type { HeatmapPalette } from '@/lib/ui-settings';
 
 export const HEATMAP_BUCKET_OPTIONS = [180, 120, 60, 30] as const;
 export type HeatmapBucketMinutes = (typeof HEATMAP_BUCKET_OPTIONS)[number];
@@ -16,6 +17,7 @@ type Props = {
   chartPoints: ChartPoint[];
   now: number;
   bucketMinutes: HeatmapBucketMinutes;
+  palette: HeatmapPalette;
   selectedCell: HeatmapSelectedCell | null;
   onBucketMinutesChange: (bucketMinutes: HeatmapBucketMinutes) => void;
   onPickCell: (dayKey: string, bIdx: number, bucketMinutes: HeatmapBucketMinutes) => void;
@@ -25,25 +27,23 @@ const NUM_DAYS = 7;
 const MINUTES_PER_DAY = 24 * 60;
 const DAILY_PEAK_BUCKET_MINUTES = 30;
 
-// Viridis-inspired 5-step ramp (colorblind-safe, perceptually uniform).
-const HEAT_EMPTY = '#151a22';
-const HEAT_STEPS = [
-  '#151a22', // 0 — empty
-  '#443a83', // 1 — low activity
-  '#31688e', // 2 — active
-  '#21918c', // 3 — hot
-  '#5ec962', // 4 — very hot
-  '#fde725', // 5 — peak
-];
+const HEAT_EMPTY = 'color-mix(in srgb, var(--surface-3) 72%, var(--bg))';
+const HEAT_RAMP_BY_PALETTE: Record<HeatmapPalette, string[]> = {
+  viridis: ['#443a83', '#31688e', '#21918c', '#5ec962', '#fde725'],
+  magma: ['#2c115f', '#721f81', '#b73779', '#f1605d', '#fcfdbf'],
+  plasma: ['#41049d', '#8f0da4', '#cc4778', '#f89540', '#f0f921'],
+  inferno: ['#320a5e', '#781c6d', '#bb3654', '#ed6925', '#fcffa4'],
+};
 
-function heatColor(count: number, max: number): string {
+function heatColor(count: number, max: number, palette: HeatmapPalette): string {
+  const steps = HEAT_RAMP_BY_PALETTE[palette];
   if (count === 0 || max === 0) return HEAT_EMPTY;
   const t = count / max;
-  if (t < 0.12) return HEAT_STEPS[1];
-  if (t < 0.30) return HEAT_STEPS[2];
-  if (t < 0.55) return HEAT_STEPS[3];
-  if (t < 0.80) return HEAT_STEPS[4];
-  return HEAT_STEPS[5];
+  if (t < 0.12) return steps[0];
+  if (t < 0.30) return steps[1];
+  if (t < 0.55) return steps[2];
+  if (t < 0.80) return steps[3];
+  return steps[4];
 }
 
 function heatTextColor(count: number, max: number): string {
@@ -169,6 +169,7 @@ export default function HourlyHeatmap({
   chartPoints,
   now,
   bucketMinutes,
+  palette,
   selectedCell,
   onBucketMinutesChange,
   onPickCell,
@@ -302,7 +303,7 @@ export default function HourlyHeatmap({
                       selectedCell?.bucketMinutes === bucketMinutes &&
                       selectedCell?.bIdx === bIdx &&
                       selectedCell?.dayKey === day.dayKey;
-                    const bg = heatColor(c.count, max);
+                    const bg = heatColor(c.count, max, palette);
                     const textColor = heatTextColor(c.count, max);
                     const rangeLabel = fmtBucketRange(bIdx, bucketMinutes);
                     return (

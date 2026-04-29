@@ -13,6 +13,7 @@ import HourlyHeatmap from '@/components/HourlyHeatmap';
 import { HEATMAP_BUCKET_OPTIONS } from '@/components/HourlyHeatmap';
 import type { HeatmapBucketMinutes, HeatmapSelectedCell } from '@/components/HourlyHeatmap';
 import { QUEUE_ORDER, queueLabel } from '@/lib/queues';
+import { normalizeQueue } from '@/lib/queues';
 import type {
   ChartPoint,
   ChartResponse,
@@ -29,6 +30,22 @@ import type {
   LiveItemEvent,
   LiveItemValueUpdatedEvent,
 } from '@/lib/live-bus';
+import {
+  HEATMAP_PALETTE_EVENT,
+  HEATMAP_PALETTE_STORAGE_KEY,
+  QUEUE_SOUND_AFA_STORAGE_KEY,
+  QUEUE_SOUND_AI_STORAGE_KEY,
+  QUEUE_SOUND_SETTINGS_EVENT,
+  QUEUE_SOUND_TEST_EVENT,
+  getStoredQueueSoundSetting,
+  isHeatmapPalette,
+} from '@/lib/ui-settings';
+import type {
+  HeatmapPalette,
+  QueueSoundSetting,
+  QueueSoundSettings,
+  QueueSoundTestRequest,
+} from '@/lib/ui-settings';
 
 type Props = {
   initialSnapshot: SnapshotResponse;
@@ -37,7 +54,7 @@ type Props = {
 
 type QueueFilter = 'ALL' | QueueCode;
 type MetricIconKind = 'box' | 'spark' | 'bolt' | 'coin' | 'clock';
-type NotificationTone = 'default' | 'last_chance';
+type NotificationTone = QueueSoundSetting;
 type AudioContextCtor = typeof AudioContext;
 type WindowWithWebkitAudioContext = Window &
   typeof globalThis & {
@@ -60,6 +77,12 @@ const FILTER_TIME_FORMATTER = new Intl.DateTimeFormat('it-IT', {
   minute: '2-digit',
 });
 const HEATMAP_BUCKET_STORAGE_KEY = 'dashboard.heatmap.bucketMinutes';
+
+function getStoredHeatmapPalette(): HeatmapPalette {
+  if (typeof window === 'undefined') return 'viridis';
+  const rawValue = window.localStorage.getItem(HEATMAP_PALETTE_STORAGE_KEY);
+  return isHeatmapPalette(rawValue) ? rawValue : 'viridis';
+}
 
 function getAudioContextCtor(): AudioContextCtor | null {
   if (typeof window === 'undefined') return null;
@@ -161,10 +184,12 @@ function formatHeatmapBucketLabel(bucketMinutes: HeatmapBucketMinutes): string {
   return bucketMinutes < 60 ? `${bucketMinutes}M` : `${bucketMinutes / 60}H`;
 }
 
-function getStoredHeatmapBucketMinutes(): HeatmapBucketMinutes {
-  if (typeof window === 'undefined') return 180;
+function getStoredHeatmapBucketMinutesOrDefault(
+  fallback: HeatmapBucketMinutes
+): HeatmapBucketMinutes {
+  if (typeof window === 'undefined') return fallback;
   const rawValue = window.localStorage.getItem(HEATMAP_BUCKET_STORAGE_KEY);
-  if (!rawValue) return 180;
+  if (!rawValue) return fallback;
   const parsed = Number(rawValue);
   if (
     Number.isFinite(parsed) &&
@@ -172,7 +197,7 @@ function getStoredHeatmapBucketMinutes(): HeatmapBucketMinutes {
   ) {
     return parsed as HeatmapBucketMinutes;
   }
-  return 180;
+  return fallback;
 }
 
 function parseHeatmapDayKey(dayKey: string): Date | null {
@@ -200,10 +225,6 @@ function formatHeatmapDayLabel(dayKey: string): string {
 
 function formatFilterRange(since: string, until: string): string {
   return `${FILTER_DATETIME_FORMATTER.format(new Date(since))} -> ${FILTER_DATETIME_FORMATTER.format(new Date(until))}`;
-}
-
-function isLastChanceQueue(queue: string | null | undefined): boolean {
-  return queue?.trim().toLowerCase().replace(/[\s-]+/g, '_') === 'last_chance';
 }
 
 function MetricIcon({ kind }: { kind: MetricIconKind }) {
@@ -394,11 +415,14 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
   const [isSyncing, setIsSyncing] = useState(false);
   const [chartPoints, setChartPoints] = useState<ChartPoint[]>([]);
   const [timeFilter, setTimeFilter] = useState<TimeFilter | null>(null);
-  const [heatmapBucketMinutes, setHeatmapBucketMinutes] = useState<HeatmapBucketMinutes>(
-    () => getStoredHeatmapBucketMinutes()
-  );
+  const [heatmapBucketMinutes, setHeatmapBucketMinutes] = useState<HeatmapBucketMinutes>(180);
+  const [heatmapPalette, setHeatmapPalette] = useState<HeatmapPalette>('viridis');
   const [pickedCell, setPickedCell] = useState<HeatmapSelectedCell | null>(null);
   const [tickerItem, setTickerItem] = useState<DashboardProduct | null>(null);
+  const [queueSoundSettings, setQueueSoundSettings] = useState<QueueSoundSettings>(() => ({
+    AI: getStoredQueueSoundSetting(QUEUE_SOUND_AI_STORAGE_KEY, 'soft'),
+    AFA: getStoredQueueSoundSetting(QUEUE_SOUND_AFA_STORAGE_KEY, 'alert'),
+  }));
   const deferredSearch = useDeferredValue(search.trim());
 
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -468,7 +492,8 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     oscillator.stop(startAt + duration);
   };
 
-  const playNotificationBeep = async (tone: NotificationTone = 'default') => {
+  const playNotificationBeep = async (tone: NotificationTone = 'soft') => {
+    if (tone === 'off') return;
     const nowMs = Date.now();
     if (nowMs - lastBeepAtRef.current < BEEP_COOLDOWN_MS) return;
 
@@ -478,9 +503,34 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
 
     const startAt = context.currentTime;
 
-    if (tone === 'last_chance') {
+    if (tone === 'alert') {
       playPulse(context, startAt, 659.25, 0.09, 'sine', 0.09);
       playPulse(context, startAt + 0.11, 987.77, 0.16, 'sine', 0.11);
+      return;
+    }
+
+    if (tone === 'chime') {
+      playPulse(context, startAt, 523.25, 0.08, 'triangle', 0.06);
+      playPulse(context, startAt + 0.09, 659.25, 0.11, 'triangle', 0.07);
+      playPulse(context, startAt + 0.22, 783.99, 0.13, 'triangle', 0.075);
+      return;
+    }
+
+    if (tone === 'ping') {
+      playPulse(context, startAt, 1174.66, 0.08, 'sine', 0.06);
+      return;
+    }
+
+    if (tone === 'bell') {
+      playPulse(context, startAt, 987.77, 0.14, 'sine', 0.07);
+      playPulse(context, startAt + 0.04, 1318.51, 0.2, 'triangle', 0.045);
+      return;
+    }
+
+    if (tone === 'pulse') {
+      playPulse(context, startAt, 660, 0.07, 'square', 0.045);
+      playPulse(context, startAt + 0.09, 660, 0.07, 'square', 0.05);
+      playPulse(context, startAt + 0.18, 660, 0.08, 'square', 0.055);
       return;
     }
 
@@ -577,6 +627,44 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
   }, []);
 
   useEffect(() => {
+    const handleQueueSoundSettingsChange = (event: Event) => {
+      const detail = (event as CustomEvent<QueueSoundSettings>).detail;
+      if (!detail) return;
+      setQueueSoundSettings((current) => ({
+        AI: detail.AI ?? current.AI,
+        AFA: detail.AFA ?? current.AFA,
+      }));
+    };
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === QUEUE_SOUND_AI_STORAGE_KEY) {
+        setQueueSoundSettings((current) => ({
+          ...current,
+          AI: getStoredQueueSoundSetting(QUEUE_SOUND_AI_STORAGE_KEY, current.AI),
+        }));
+      }
+      if (event.key === QUEUE_SOUND_AFA_STORAGE_KEY) {
+        setQueueSoundSettings((current) => ({
+          ...current,
+          AFA: getStoredQueueSoundSetting(QUEUE_SOUND_AFA_STORAGE_KEY, current.AFA),
+        }));
+      }
+    };
+    const handleQueueSoundTest = (event: Event) => {
+      const detail = (event as CustomEvent<QueueSoundTestRequest>).detail;
+      if (!detail?.sound || detail.sound === 'off') return;
+      void playNotificationBeep(detail.sound);
+    };
+    window.addEventListener(QUEUE_SOUND_SETTINGS_EVENT, handleQueueSoundSettingsChange);
+    window.addEventListener(QUEUE_SOUND_TEST_EVENT, handleQueueSoundTest);
+    window.addEventListener('storage', handleStorageChange);
+    return () => {
+      window.removeEventListener(QUEUE_SOUND_SETTINGS_EVENT, handleQueueSoundSettingsChange);
+      window.removeEventListener(QUEUE_SOUND_TEST_EVENT, handleQueueSoundTest);
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+
+  useEffect(() => {
     return () => {
       productsAbortRef.current?.abort();
       if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
@@ -639,11 +727,40 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
   }, [deferredSearch, queueFilter, sortMode, timeFilter]);
 
   useEffect(() => {
+    setHeatmapBucketMinutes(getStoredHeatmapBucketMinutesOrDefault(180));
+    setHeatmapPalette(getStoredHeatmapPalette());
+  }, []);
+
+  useEffect(() => {
     window.localStorage.setItem(
       HEATMAP_BUCKET_STORAGE_KEY,
       String(heatmapBucketMinutes)
     );
   }, [heatmapBucketMinutes]);
+
+  useEffect(() => {
+    const handlePaletteChange = (event: Event) => {
+      const nextPalette = (event as CustomEvent<HeatmapPalette>).detail;
+      if (isHeatmapPalette(nextPalette)) {
+        setHeatmapPalette(nextPalette);
+      }
+    };
+    const handleStorageChange = (event: StorageEvent) => {
+      if (
+        event.key === HEATMAP_PALETTE_STORAGE_KEY &&
+        isHeatmapPalette(event.newValue)
+      ) {
+        setHeatmapPalette(event.newValue);
+      }
+    };
+
+    window.addEventListener(HEATMAP_PALETTE_EVENT, handlePaletteChange);
+    window.addEventListener('storage', handleStorageChange);
+    return () => {
+      window.removeEventListener(HEATMAP_PALETTE_EVENT, handlePaletteChange);
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -696,9 +813,18 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
               setSnapshot((current) => applyLiveEvent(current, payload.ts));
               setHealth((current) => applyCollectorActivity(current));
             });
-            void playNotificationBeep(
-              isLastChanceQueue(payload.queue) ? 'last_chance' : 'default'
-            );
+            const normalizedQueue = normalizeQueue(payload.queue);
+            if (normalizedQueue === 'AI') {
+              const sound = queueSoundSettings.AI;
+              if (sound !== 'off') {
+                void playNotificationBeep(sound);
+              }
+            } else if (normalizedQueue === 'AFA') {
+              const sound = queueSoundSettings.AFA;
+              if (sound !== 'off') {
+                void playNotificationBeep(sound);
+              }
+            }
             // Stage the asin for ticker display once the products refresh resolves
             pendingTickerAsinRef.current = payload.a;
             scheduleSnapshotRefresh();
@@ -742,7 +868,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
     };
-  }, []);
+  }, [queueSoundSettings]);
 
   useEffect(() => {
     let cancelled = false;
@@ -930,6 +1056,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
             chartPoints={chartPoints}
             now={now}
             bucketMinutes={heatmapBucketMinutes}
+            palette={heatmapPalette}
             selectedCell={pickedCell}
             onBucketMinutesChange={handleHeatmapBucketChange}
             onPickCell={handlePickCell}
@@ -988,7 +1115,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
             <p className="eyebrow">ULTIMI PRODOTTI</p>
             <h2 className="panel-title">Feed in tempo reale</h2>
             <p className="products-sub">
-              Disclaimer: il monitoraggio e i valori mostrati sono indicativi e possono subire ritardi o imprecisioni.
+              Valori indicativi: possibili ritardi o imprecisioni.
             </p>
           </div>
 

@@ -15,6 +15,7 @@ type CountRow = {
   added_1h: string;
   tracked_value_24h: string;
   avg_item_value_24h: string | null;
+  missing_item_value_24h: string;
 };
 
 type DayRow = {
@@ -257,6 +258,7 @@ function emptySnapshot(): SnapshotResponse {
     added_1h: 0,
     tracked_value_24h: 0,
     avg_item_value_24h: null,
+    missing_item_value_24h: 0,
     data_quality: 'partial',
     daily_counts: createEmptyDailyCounts(),
     hourly_activity_24h: createEmptyHourlyActivity(),
@@ -288,7 +290,11 @@ export async function loadSnapshot(): Promise<SnapshotResponse> {
           avg(item_value) FILTER (
             WHERE event_time > now() - INTERVAL '24 hours'
               AND item_value IS NOT NULL
-          )::text AS avg_item_value_24h
+          )::text AS avg_item_value_24h,
+          count(*) FILTER (
+            WHERE event_time > now() - INTERVAL '24 hours'
+              AND item_value IS NULL
+          )::text AS missing_item_value_24h
         FROM vine_item_events
         WHERE event_type = 'item_added'
         `
@@ -379,6 +385,7 @@ export async function loadSnapshot(): Promise<SnapshotResponse> {
       added_1h: toNumber(counts.rows[0]?.added_1h),
       tracked_value_24h: toNumber(counts.rows[0]?.tracked_value_24h),
       avg_item_value_24h: toNullableNumber(counts.rows[0]?.avg_item_value_24h),
+      missing_item_value_24h: toNumber(counts.rows[0]?.missing_item_value_24h),
       data_quality: dq.rows[0]?.data_quality ?? 'partial',
       daily_counts: daily.rows.length
         ? daily.rows.map((row) => ({

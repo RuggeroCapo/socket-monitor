@@ -2,10 +2,10 @@ export default function Nav() {
   return (
     <nav className="topbar" aria-label="Navigazione principale">
       <div className="topbar-brand">
-        <span className="brand-mark">VS</span>
+        <span className="brand-mark">VP</span>
         <div>
           <div className="brand-name">
-            Vine Stats <span>IT</span>
+            Vine <span>Pulse</span>
           </div>
           <div className="brand-subtitle">Monitoraggio Amazon Vine</div>
         </div>

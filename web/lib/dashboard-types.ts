@@ -1,6 +1,9 @@
+export type QueueCode = 'AI' | 'AFA' | 'RFY' | 'OTHER';
+
 export type ChartPoint = {
   bucket: string;
   added: number;
+  queues?: Partial<Record<QueueCode, number>>;
 };
 
 export type TimeFilter = {
@@ -13,8 +16,6 @@ export type TimeFilter = {
 export type ChartResponse = {
   points: ChartPoint[];
 };
-
-export type QueueCode = 'AI' | 'AFA' | 'RFY' | 'OTHER';
 
 export type ProductSortMode = 'newest' | 'value_desc' | 'value_asc';
 
@@ -48,6 +49,7 @@ export type SnapshotResponse = {
   added_1h: number;
   tracked_value_24h: number;
   avg_item_value_24h: number | null;
+  missing_item_value_24h: number;
   data_quality: 'ok' | 'partial';
   daily_counts: { day: string; label: string; added: number }[];
   hourly_activity_24h: HourlyActivityPoint[];

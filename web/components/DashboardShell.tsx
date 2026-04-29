@@ -10,6 +10,8 @@ import {
 } from 'react';
 import SevenDayChart from '@/components/SevenDayChart';
 import HourlyHeatmap from '@/components/HourlyHeatmap';
+import { HEATMAP_BUCKET_OPTIONS } from '@/components/HourlyHeatmap';
+import type { HeatmapBucketMinutes, HeatmapSelectedCell } from '@/components/HourlyHeatmap';
 import { QUEUE_ORDER, queueLabel } from '@/lib/queues';
 import type {
   ChartPoint,
@@ -34,8 +36,7 @@ type Props = {
 };
 
 type QueueFilter = 'ALL' | QueueCode;
-type StatusTone = 'ok' | 'warn' | 'bad';
-type MetricIconKind = 'box' | 'spark' | 'bolt' | 'coin' | 'shield' | 'clock';
+type MetricIconKind = 'box' | 'spark' | 'bolt' | 'coin' | 'clock';
 type NotificationTone = 'default' | 'last_chance';
 type AudioContextCtor = typeof AudioContext;
 type WindowWithWebkitAudioContext = Window &
@@ -43,9 +44,8 @@ type WindowWithWebkitAudioContext = Window &
     webkitAudioContext?: AudioContextCtor;
   };
 
-const QUEUE_FILTERS: QueueFilter[] = ['ALL', ...QUEUE_ORDER];
-const MONITORING_TOOLTIP_COPY =
-  'Per la natura del monitoraggio alcuni oggetti possono non essere rilevati correttamente dal sistema.';
+const QUEUE_FILTERS: QueueFilter[] = ['ALL', ...QUEUE_ORDER.filter((queue) => queue !== 'OTHER')];
+const DISABLED_QUEUE_FILTERS = new Set<QueueFilter>(['RFY']);
 const BEEP_COOLDOWN_MS = 250;
 const PAGE_SIZE = 20;
 const DAY_LABELS = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
@@ -59,6 +59,7 @@ const FILTER_TIME_FORMATTER = new Intl.DateTimeFormat('it-IT', {
   hour: '2-digit',
   minute: '2-digit',
 });
+const HEATMAP_BUCKET_STORAGE_KEY = 'dashboard.heatmap.bucketMinutes';
 
 function getAudioContextCtor(): AudioContextCtor | null {
   if (typeof window === 'undefined') return null;
@@ -134,12 +135,67 @@ function formatMoney(value: number | null, currency: string | null): string {
   }
 }
 
-function compactNumber(value: number): string {
+function compactNumber(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '0';
   return value.toLocaleString('it-IT');
 }
 
 function padHour(value: number): string {
   return String(value).padStart(2, '0');
+}
+
+function formatHeatmapBucketRange(bIdx: number, bucketMinutes: HeatmapBucketMinutes): string {
+  const startMinutes = bIdx * bucketMinutes;
+  const endMinutes = startMinutes + bucketMinutes;
+  const format = (totalMinutes: number) => {
+    const normalized = ((totalMinutes % 1440) + 1440) % 1440;
+    const hours = Math.floor(normalized / 60);
+    const minutes = normalized % 60;
+    return `${padHour(hours)}:${padHour(minutes)}`;
+  };
+
+  return `${format(startMinutes)}-${format(endMinutes)}`;
+}
+
+function formatHeatmapBucketLabel(bucketMinutes: HeatmapBucketMinutes): string {
+  return bucketMinutes < 60 ? `${bucketMinutes}M` : `${bucketMinutes / 60}H`;
+}
+
+function getStoredHeatmapBucketMinutes(): HeatmapBucketMinutes {
+  if (typeof window === 'undefined') return 180;
+  const rawValue = window.localStorage.getItem(HEATMAP_BUCKET_STORAGE_KEY);
+  if (!rawValue) return 180;
+  const parsed = Number(rawValue);
+  if (
+    Number.isFinite(parsed) &&
+    HEATMAP_BUCKET_OPTIONS.includes(parsed as HeatmapBucketMinutes)
+  ) {
+    return parsed as HeatmapBucketMinutes;
+  }
+  return 180;
+}
+
+function parseHeatmapDayKey(dayKey: string): Date | null {
+  const [year, month, day] = dayKey.split('-').map(Number);
+  if (!year || !month || !day) return null;
+
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return date;
+}
+
+function formatHeatmapDayLabel(dayKey: string): string {
+  const date = parseHeatmapDayKey(dayKey);
+  if (!date) return dayKey;
+
+  return `${DAY_LABELS[date.getDay()]} ${padHour(date.getDate())}/${padHour(date.getMonth() + 1)}`;
 }
 
 function formatFilterRange(since: string, until: string): string {
@@ -148,37 +204,6 @@ function formatFilterRange(since: string, until: string): string {
 
 function isLastChanceQueue(queue: string | null | undefined): boolean {
   return queue?.trim().toLowerCase().replace(/[\s-]+/g, '_') === 'last_chance';
-}
-
-function collectorEventLabel(eventType: string | null | undefined): string {
-  switch (eventType) {
-    case 'connected':
-      return 'Connesso';
-    case 'disconnected':
-      return 'Disconnesso';
-    case 'timeout':
-      return 'Timeout';
-    case 'gap_opened':
-      return 'Gap aperto';
-    case 'gap_closed':
-      return 'Gap chiuso';
-    default:
-      return 'Nessun evento';
-  }
-}
-
-function qualityLabel(quality: 'ok' | 'partial'): string {
-  return quality === 'ok' ? 'Stimata' : 'Ridotta';
-}
-
-function dashboardTone(health: HealthResponse): StatusTone {
-  if (health.collector_status === 'offline') return 'bad';
-  return health.data_quality_1h === 'ok' ? 'ok' : 'warn';
-}
-
-function dashboardCopy(health: HealthResponse): string {
-  if (health.collector_status === 'offline') return 'Collector offline';
-  return health.data_quality_1h === 'ok' ? 'Realtime attivo' : 'Copertura live parziale';
 }
 
 function MetricIcon({ kind }: { kind: MetricIconKind }) {
@@ -217,12 +242,6 @@ function MetricIcon({ kind }: { kind: MetricIconKind }) {
             <path {...common} d="M12 7v10" />
           </>
         )}
-        {kind === 'shield' && (
-          <>
-            <path {...common} d="M12 3 5.5 6v5.2c0 4.2 2.7 7.9 6.5 9.3 3.8-1.4 6.5-5.1 6.5-9.3V6z" />
-            <path {...common} d="m9.3 12.2 1.7 1.7 3.7-4.1" />
-          </>
-        )}
         {kind === 'clock' && (
           <>
             <circle {...common} cx="12" cy="12" r="7.5" />
@@ -230,19 +249,6 @@ function MetricIcon({ kind }: { kind: MetricIconKind }) {
           </>
         )}
       </svg>
-    </span>
-  );
-}
-
-function InfoTooltip({ copy = MONITORING_TOOLTIP_COPY }: { copy?: string }) {
-  return (
-    <span className="info-tooltip" tabIndex={0} aria-label={copy}>
-      <span className="info-tooltip-trigger" aria-hidden="true">
-        I
-      </span>
-      <span className="info-tooltip-bubble" role="tooltip">
-        {copy}
-      </span>
     </span>
   );
 }
@@ -388,7 +394,10 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
   const [isSyncing, setIsSyncing] = useState(false);
   const [chartPoints, setChartPoints] = useState<ChartPoint[]>([]);
   const [timeFilter, setTimeFilter] = useState<TimeFilter | null>(null);
-  const [pickedCell, setPickedCell] = useState<{ dow: number; bIdx: number } | null>(null);
+  const [heatmapBucketMinutes, setHeatmapBucketMinutes] = useState<HeatmapBucketMinutes>(
+    () => getStoredHeatmapBucketMinutes()
+  );
+  const [pickedCell, setPickedCell] = useState<HeatmapSelectedCell | null>(null);
   const [tickerItem, setTickerItem] = useState<DashboardProduct | null>(null);
   const deferredSearch = useDeferredValue(search.trim());
 
@@ -630,6 +639,13 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
   }, [deferredSearch, queueFilter, sortMode, timeFilter]);
 
   useEffect(() => {
+    window.localStorage.setItem(
+      HEATMAP_BUCKET_STORAGE_KEY,
+      String(heatmapBucketMinutes)
+    );
+  }, [heatmapBucketMinutes]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const refreshSnapshot = async () => {
@@ -761,56 +777,55 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     await fetchProducts({ offset: products.length, limit: PAGE_SIZE, replace: false });
   };
 
-  const handleChartRangeChange = (selection: {
-    since: string;
-    until: string;
-    rangeLabel: string;
-    widthLabel: string;
-  }) => {
-    setTimeFilter({
-      since: selection.since,
-      until: selection.until,
-      source: 'chart',
-      label: `Grafico · ${selection.rangeLabel} (${selection.widthLabel})`,
-    });
+  const handleHeatmapBucketChange = (bucketMinutes: HeatmapBucketMinutes) => {
+    setHeatmapBucketMinutes(bucketMinutes);
     setPickedCell(null);
+    if (timeFilter?.source === 'heatmap') {
+      setTimeFilter(null);
+    }
   };
 
-  const handlePickCell = (dow: number, bIdx: number) => {
-    if (pickedCell?.dow === dow && pickedCell?.bIdx === bIdx) {
+  const handlePickCell = (
+    dayKey: string,
+    bIdx: number,
+    bucketMinutes: HeatmapBucketMinutes
+  ) => {
+    if (
+      pickedCell?.dayKey === dayKey &&
+      pickedCell?.bIdx === bIdx &&
+      pickedCell?.bucketMinutes === bucketMinutes
+    ) {
       // Toggle off
       setPickedCell(null);
       setTimeFilter(null);
       return;
     }
-    // Find the most recent occurrence of this (dow, bIdx) in the last 7 days
+    // The heatmap rows are concrete rolling dates, so the clicked row maps directly to one day.
     const nowMs = Date.now();
-    const bucketHours = bIdx * 3;
-    let targetMs: number | null = null;
-    for (let daysAgo = 0; daysAgo <= 6; daysAgo++) {
-      const candidate = new Date(nowMs - daysAgo * 86_400_000);
-      if (candidate.getDay() === dow) {
-        candidate.setHours(bucketHours, 0, 0, 0);
-        if (candidate.getTime() <= nowMs) {
-          targetMs = candidate.getTime();
-          break;
-        }
-      }
-    }
-    if (targetMs === null) return;
+    const bucketStartMinutes = bIdx * bucketMinutes;
+    const targetDate = parseHeatmapDayKey(dayKey);
+    if (!targetDate) return;
+    targetDate.setHours(
+      Math.floor(bucketStartMinutes / 60),
+      bucketStartMinutes % 60,
+      0,
+      0
+    );
+    const targetMs = targetDate.getTime();
+    if (targetMs > nowMs) return;
     const sinceMs = targetMs;
-    const untilMs = targetMs + 3 * 3600_000;
+    const untilMs = targetMs + bucketMinutes * 60_000;
     const since = new Date(sinceMs).toISOString();
     const until = new Date(untilMs).toISOString();
-    const hourLabel = `${padHour(bucketHours)}:00-${padHour((bucketHours + 3) % 24)}:00`;
+    const hourLabel = formatHeatmapBucketRange(bIdx, bucketMinutes);
     const dateLabel = FILTER_DATETIME_FORMATTER.format(new Date(sinceMs));
     const untilLabel = FILTER_TIME_FORMATTER.format(new Date(untilMs));
-    setPickedCell({ dow, bIdx });
+    setPickedCell({ dayKey, bIdx, bucketMinutes });
     setTimeFilter({
       since,
       until,
       source: 'heatmap',
-      label: `Heatmap · ${DAY_LABELS[dow]} ${hourLabel} (${dateLabel} -> ${untilLabel})`,
+      label: `Heatmap · ${formatHeatmapDayLabel(dayKey)} ${hourLabel} (${dateLabel} -> ${untilLabel})`,
     });
   };
 
@@ -821,7 +836,6 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     setSearch('');
   };
 
-  const tone = dashboardTone(health);
   const latestEventTime = snapshot.recent_products[0]?.event_time ?? health.last_event_time;
   const queueCounts = new Map<QueueCode, number>(
     snapshot.queue_totals.map(({ queue, count }) => [queue, count])
@@ -850,21 +864,10 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
     timeFilter || pickedCell || queueFilter !== 'ALL' || deferredSearch
   );
   const showProductsLoading = isRefreshingProducts && visibleProducts.length === 0;
-  const liveQuality = qualityLabel(health.data_quality_1h);
-  const historicalQuality = qualityLabel(snapshot.data_quality);
+  const addedToday = snapshot.daily_counts[snapshot.daily_counts.length - 1]?.added ?? 0;
 
   return (
     <main className="dashboard-shell">
-      <section className="dashboard-head">
-        <div className="dashboard-head-copy">
-          <p className="eyebrow">Dashboard live</p>
-          <h1 className="dashboard-title">Monitoraggio Amazon Vine in tempo reale</h1>
-          <p className="dashboard-subtitle">
-            Timeline, pattern di drop e feed prodotti in un layout operativo ispirato a Vine Stats.
-          </p>
-        </div>
-      </section>
-
       <section className="metric-strip">
         <article className="metric-card metric-card-accent">
           <div className="metric-topline">
@@ -877,10 +880,10 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
         <article className="metric-card">
           <div className="metric-topline">
             <MetricIcon kind="spark" />
-            <span className="metric-label">Nuovi in 24h</span>
+            <span className="metric-label">Nuovi oggi</span>
           </div>
-          <strong className="metric-value">{compactNumber(snapshot.added_24h)}</strong>
-          <p className="metric-sub">aggiunte da ieri</p>
+          <strong className="metric-value">{compactNumber(addedToday)}</strong>
+          <p className="metric-sub">dalle 00:00 di oggi</p>
         </article>
         <article className="metric-card">
           <div className="metric-topline">
@@ -904,17 +907,6 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
         </article>
         <article className="metric-card">
           <div className="metric-topline">
-            <MetricIcon kind="shield" />
-            <div className="metric-heading">
-              <span className="metric-label">Qualità rilevazione</span>
-              <InfoTooltip />
-            </div>
-          </div>
-          <strong className="metric-value">{liveQuality}</strong>
-          <p className="metric-sub">monitoraggio best effort</p>
-        </article>
-        <article className="metric-card">
-          <div className="metric-topline">
             <MetricIcon kind="box" />
             <span className="metric-label">Totale 7g</span>
           </div>
@@ -924,19 +916,33 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
       </section>
 
       <section className="chart-section">
+        <article className="panel rail-panel heatmap-panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">PATTERN 7G × {formatHeatmapBucketLabel(heatmapBucketMinutes)}</p>
+              <h2 className="panel-title">Heatmap attività</h2>
+            </div>
+            <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace' }}>
+              click cella per filtrare
+            </span>
+          </div>
+          <HourlyHeatmap
+            chartPoints={chartPoints}
+            now={now}
+            bucketMinutes={heatmapBucketMinutes}
+            selectedCell={pickedCell}
+            onBucketMinutesChange={handleHeatmapBucketChange}
+            onPickCell={handlePickCell}
+          />
+        </article>
         <article className="panel chart-panel">
           <div className="panel-header">
             <div>
               <p className="eyebrow">ATTIVITÀ LIVE</p>
-              <h2 className="panel-title">Timeline prodotti rilevati</h2>
+              <h2 className="panel-title">Pie chart giornaliera</h2>
             </div>
-            <span className={`status-pill ${snapshot.data_quality === 'ok' ? 'ok' : 'warn'}`}>
-              <span className="status-pill-dot" />
-              {historicalQuality} 7g
-              <InfoTooltip />
-            </span>
           </div>
-          <SevenDayChart points={chartPoints} onRangeChange={handleChartRangeChange} />
+          <SevenDayChart points={chartPoints} />
         </article>
       </section>
 
@@ -961,9 +967,9 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
             )}
             {pickedCell && !timeFilter && (
               <span className="active-filter-chip">
-                {DAY_LABELS[pickedCell.dow]}
+                {formatHeatmapDayLabel(pickedCell.dayKey)}
                 {' '}
-                {padHour(pickedCell.bIdx * 3)}:00-{padHour((pickedCell.bIdx * 3 + 3) % 24)}:00
+                {formatHeatmapBucketRange(pickedCell.bIdx, pickedCell.bucketMinutes)}
               </span>
             )}
             <span className="active-filter-label">
@@ -976,67 +982,13 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
         </div>
       )}
 
-      <section className="detail-grid">
-        <article className="panel rail-panel heatmap-panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">PATTERN 7G × 3H</p>
-              <h2 className="panel-title">Heatmap attività</h2>
-            </div>
-            <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'JetBrains Mono, monospace' }}>
-              click cella per filtrare
-            </span>
-          </div>
-          <HourlyHeatmap
-            chartPoints={chartPoints}
-            now={now}
-            selectedCell={pickedCell}
-            onPickCell={handlePickCell}
-          />
-        </article>
-
-        <article className="panel rail-panel status-panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">STATO SISTEMA</p>
-              <h2 className="panel-title">Segnali operativi</h2>
-            </div>
-            <span className={`status-pill ${tone}`}>
-              <span className="status-pill-dot" />
-              {dashboardCopy(health)}
-            </span>
-          </div>
-
-          <div className="ops-list">
-            <div className="ops-row">
-              <span className="ops-label">Collector</span>
-              <strong>{health.collector_status === 'online' ? 'Online' : 'Offline'}</strong>
-              <span>{health.gap_open ? 'gap aperto' : 'socket attivo'}</span>
-            </div>
-            <div className="ops-row">
-              <div className="ops-label-wrap">
-                <span className="ops-label">Qualità live</span>
-                <InfoTooltip />
-              </div>
-              <strong>{liveQuality}</strong>
-              <span>ultima ora</span>
-            </div>
-            <div className="ops-row">
-              <span className="ops-label">Ultimo evento collector</span>
-              <strong>{collectorEventLabel(health.last_collector_event?.event_type)}</strong>
-              <span>{relTime(health.last_collector_event?.time ?? null, now)}</span>
-            </div>
-          </div>
-        </article>
-      </section>
-
       <section className="panel products-panel">
         <div className="products-header">
           <div>
             <p className="eyebrow">ULTIMI PRODOTTI</p>
             <h2 className="panel-title">Feed in tempo reale</h2>
             <p className="products-sub">
-              Coda normalizzata, card più compatte e aggiornamento automatico dal collector live.
+              Disclaimer: il monitoraggio e i valori mostrati sono indicativi e possono subire ritardi o imprecisioni.
             </p>
           </div>
 
@@ -1064,6 +1016,7 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
 
         <div className="queue-filter-row">
           {QUEUE_FILTERS.map((queue) => {
+            const isDisabled = DISABLED_QUEUE_FILTERS.has(queue);
             const count =
               queue === queueFilter
                 ? productsTotal
@@ -1078,11 +1031,16 @@ export default function DashboardShell({ initialSnapshot, initialHealth }: Props
                 className={`queue-pill ${queueFilter === queue ? 'active' : ''}`}
                 data-queue={queue}
                 aria-pressed={queueFilter === queue}
-                onClick={() => setQueueFilter(queue)}
+                disabled={isDisabled}
+                aria-disabled={isDisabled}
+                onClick={() => {
+                  if (isDisabled) return;
+                  setQueueFilter(queue);
+                }}
               >
                 {queueLabel(queue)}
                 <span>
-                  {count}
+                  {isDisabled ? 'n/d' : count}
                 </span>
               </button>
             );

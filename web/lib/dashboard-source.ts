@@ -149,6 +149,7 @@ function createFallbackSnapshot(): SnapshotResponse {
     added_1h: 0,
     tracked_value_24h: 0,
     avg_item_value_24h: null,
+    missing_item_value_24h: 0,
     data_quality: 'partial',
     daily_counts: createEmptyDailyCounts(),
     hourly_activity_24h: createEmptyHourlyActivity(),

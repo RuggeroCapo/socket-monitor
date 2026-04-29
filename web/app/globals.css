@@ -481,7 +481,7 @@ code,
 
 .chart-section {
   display: grid;
-  grid-template-columns: minmax(0, 4fr) minmax(280px, 1fr);
+  grid-template-columns: minmax(0, 4.45fr) minmax(280px, 1fr);
   gap: var(--gap);
   align-items: stretch;
   margin-bottom: 28px;
@@ -2401,12 +2401,18 @@ select {
   margin-bottom: 0;
 }
 
+.chart-section {
+  grid-template-columns: 1.35fr repeat(4, minmax(0, 1fr));
+}
+
 .chart-section > .heatmap-panel {
   min-width: 0;
+  grid-column: 1 / span 4;
 }
 
 .chart-section > .chart-panel {
-  min-width: 280px;
+  min-width: 0;
+  grid-column: 5;
 }
 
 .chart-panel,

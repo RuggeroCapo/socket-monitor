@@ -3183,6 +3183,11 @@ html[data-theme='light'] .product-thumb .queue-other {
     grid-template-columns: 1fr;
   }
 
+  .chart-section > .heatmap-panel,
+  .chart-section > .chart-panel {
+    grid-column: auto;
+  }
+
   .chart-viewport {
     height: 300px;
   }
